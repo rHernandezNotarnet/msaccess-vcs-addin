@@ -86,7 +86,20 @@ Public Function IsDatabaseAccessible(Optional strDatabasePath As String) As Bool
     m_varLastResult = Empty
     CallWorker "DbAccessCheck", 10, "CheckDatabaseAccessible", """" & strPath & """"
     Me.WaitForQueue 10, "CheckDatabaseAccessible", 0.1
-    IsDatabaseAccessible = CBool(m_varLastResult)
+
+    ' Three outcomes, not two. An empty result means the worker never reported anything
+    ' at all, which is not the same as an answer of "not accessible" even though we take
+    ' the same conservative action. Without this, a worker that died is indistinguishable
+    ' in the log from a database that really was locked.
+    If IsEmpty(m_varLastResult) Then
+        Log.Error eelWarning, _
+            T("No worker result for {0}; assuming it is not accessible.", var0:=strPath), _
+            ModuleName(Me) & ".IsDatabaseAccessible"
+        IsDatabaseAccessible = False
+    Else
+        IsDatabaseAccessible = CBool(m_varLastResult)
+    End If
+
 End Function
 
 
@@ -168,6 +181,11 @@ Public Sub WaitForQueue(dblTimeout As Double, Optional strAction As String = "Al
             DoEvents
         Loop
         DoEvents
+
+        ' Pick up anything delivered through the file channel. A job that does not need
+        ' the Access instance answers by writing a file, so nothing arrives on its own
+        ' and the wait loop has to come looking for it.
+        PollJobResults
 
         ' We can exit early if there is nothing in the queue
         If Me.Queue.Count = 0 Then Exit Do
@@ -324,16 +342,27 @@ Private Function CallWorker(strKey As String, dblTimeoutSeconds As Double, _
 
     Dim intParam As Integer
     Dim strHash As String
+    Dim strJobKey As String
     Dim lngHandle As Long
     Dim cJob As clsJob
 
-    ' Make sure this key/action is not already running
+    ' Make sure this key/action is not already running. The queue key carries a suffix
+    ' unique to each launch, so the check is on the deterministic part of it.
     strHash = GetStringHash(strKey & strAction)
-    If Me.Queue.Exists(strHash) Then
+    If JobIsQueued(strHash) Then
         Log.Error eelError, "Duplicate job in queue: " & strAction & "." & strKey, _
             ModuleName(Me) & ".CallWorker"
         Exit Function
     End If
+
+    ' Make the key unique to this launch. Without a suffix, the key of a given
+    ' key/action pair is identical in every session and forever, so a worker answering
+    ' after its caller gave up would satisfy a later job with a stale value, and a
+    ' result file left behind by an earlier run would be read as this answer. The
+    ' computer name is in the salt because the install folder, and with it the result
+    ' folder, can be shared, while the timer and counter behind the suffix are per
+    ' process.
+    strJobKey = strHash & "-" & UniqueHashSuffix(strKey & strAction & Environ$("COMPUTERNAME"))
 
     ' Verify that the work script is installed and current
     VerifyWorker
@@ -348,7 +377,7 @@ Private Function CallWorker(strKey As String, dblTimeoutSeconds As Double, _
         .Add " """, CurrentProject.FullName, """"
 
         ' Add unique key as second parameter
-        .Add " ", strHash
+        .Add " ", strJobKey
 
         ' Add specified action
         .Add " ", strAction
@@ -361,12 +390,16 @@ Private Function CallWorker(strKey As String, dblTimeoutSeconds As Double, _
         ' Add to job queue (before launching, just in case it runs very fast)
         Set cJob = New clsJob
         With cJob
-            .KeyHash = strHash
+            .KeyHash = strJobKey
             .Action = strAction
             .Start = Perf.MicroTimer
             .Timeout = .Start + dblTimeoutSeconds
+            ' Where this job's result arrives if the worker reports by file. Assigned
+            ' for every job: which channel is used is the worker's call, and polling
+            ' for a file that never appears costs one FileExists.
+            .ResultFile = JobResultFolder & PathSep & strJobKey & ".result"
         End With
-        Me.Queue.Add strHash, cJob
+        Me.Queue.Add strJobKey, cJob
 
         ' Use the Shell command to launch the worker as an external asynchrous
         ' process, and return the process ID to the caller.
@@ -378,6 +411,173 @@ Private Function CallWorker(strKey As String, dblTimeoutSeconds As Double, _
     CallWorker = lngHandle
 
 End Function
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : JobIsQueued
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 8/22/2026
+' Purpose   : Return true if a job for this key hash is already in the queue. The queue
+'           : key is the hash plus a per-launch suffix, so this matches on the hash
+'           : alone and keeps the duplicate check independent of the suffix.
+'---------------------------------------------------------------------------------------
+'
+Private Function JobIsQueued(strKeyHash As String) As Boolean
+
+    Dim varKey As Variant
+
+    ' Both halves of a queue key are lowercase hexadecimal (modHash.GetHash and
+    ' modHash.UniqueHashSuffix), so neither half can contain the separator. If the
+    ' hash alphabet ever changes, this guard stops being sound.
+    For Each varKey In Me.Queue.Keys
+        If Left(CStr(varKey), Len(strKeyHash) + 1) = strKeyHash & "-" Then
+            JobIsQueued = True
+            Exit Function
+        End If
+    Next varKey
+
+End Function
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : JobResultFolder
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 8/22/2026
+' Purpose   : Folder where workers drop their result files, next to the worker script.
+'           : (WriteJobResult builds the same path from WScript.ScriptFullName, so the
+'           : two folder names have to stay in step.)
+'           : Swept once per operation of files left behind by a job whose caller had
+'           : already given up. The sweep is by age rather than by emptying the folder,
+'           : because another Access instance may have a job in flight in here.
+'---------------------------------------------------------------------------------------
+'
+Private Function JobResultFolder() As String
+
+    ' Well past the longest job timeout (300 seconds for BuildAndInstall), so a file
+    ' this old cannot belong to a job anybody is still waiting for.
+    Const StaleJobHours As Double = 1
+
+    Static blnReady As Boolean
+
+    Dim oFS As Object
+    Dim strFolder As String
+    Dim colStale As Collection
+    Dim varFile As Variant
+
+    ' Dereference the FSO getter before opening a local handler: the getter contains
+    ' LogUnhandledErrors, so with an error pending it would be reported from in here.
+    Set oFS = FSO
+    strFolder = oFS.GetParentFolderName(modInstall.GetAddInFileName) & PathSep & "WorkerJobs"
+    JobResultFolder = strFolder
+    If blnReady Then Exit Function
+    blnReady = True
+
+    LogUnhandledErrors
+    On Error Resume Next
+
+    ' VerifyPath tells a folder from a file name by the trailing separator, so without
+    ' one it would verify the parent instead and silently do nothing here.
+    VerifyPath strFolder & PathSep
+
+    ' Collect first and delete afterwards: the Files collection is live, and deleting
+    ' while enumerating it can skip entries.
+    Set colStale = New Collection
+    If oFS.FolderExists(strFolder) Then
+        For Each varFile In oFS.GetFolder(strFolder).Files
+            If varFile.DateLastModified < Now - (StaleJobHours / 24) Then
+                colStale.Add varFile.Path
+            End If
+        Next varFile
+    End If
+    For Each varFile In colStale
+        DeleteFile CStr(varFile)
+    Next varFile
+
+    CatchAny eelWarning, "Error preparing the worker result folder: " & strFolder, _
+        ModuleName(Me) & ".JobResultFolder"
+
+End Function
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : PollJobResults
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 8/22/2026
+' Purpose   : Pick up results delivered through the file channel. An action that does
+'           : not need the Access instance to do its work reports by writing a file
+'           : rather than by calling back over COM, so nothing arrives on its own and
+'           : the wait loop has to come looking. The value is handed to ReturnWorker so
+'           : that job logging and queue removal stay in one place.
+'           : Runs under its own handler on purpose: modBuild.Build wraps everything in
+'           : On Error Resume Next, so an error escaping from here would be swallowed
+'           : there and the build would carry on as if the check had answered.
+'---------------------------------------------------------------------------------------
+'
+Private Sub PollJobResults()
+
+    Dim oFS As Object
+    Dim varKeys As Variant
+    Dim varKey As Variant
+    Dim cJob As clsJob
+    Dim strFile As String
+    Dim strContent As String
+    Dim strValue As String
+
+    ' Dereference the FSO getter and snapshot the keys before opening a local handler:
+    ' the getter contains LogUnhandledErrors, so with an error pending it would be
+    ' reported from in here. (modInstall carries the same note for the same reason.)
+    Set oFS = FSO
+    varKeys = Me.Queue.Keys
+
+    LogUnhandledErrors
+    On Error Resume Next
+
+    For Each varKey In varKeys
+        If Me.Queue.Exists(varKey) Then
+            Set cJob = Me.Queue(varKey)
+            strFile = cJob.ResultFile
+            Set cJob = Nothing
+            If Len(strFile) > 0 Then
+                If oFS.FileExists(strFile) Then
+
+                    ' Split on an empty string returns an array with no elements, so
+                    ' the first element cannot be read without checking the length.
+                    strContent = ReadFile(strFile)
+                    strValue = vbNullString
+                    If Len(strContent) > 0 Then
+                        strValue = Trim(Split(strContent, vbCrLf)(0))
+                    End If
+
+                    Select Case strValue
+                        Case "1", "0"
+                            ' Hand the value over before deleting. DeleteFile has no
+                            ' error handling of its own, so a sharing violation must
+                            ' not be able to lose a result that did arrive; the age
+                            ' sweep collects whatever is left behind.
+                            Me.ReturnWorker CStr(varKey), (strValue = "1")
+                            DeleteFile strFile
+                        Case Else
+                            ' Not content we wrote. Retire the job so the caller does
+                            ' not also pay the timeout, and keep the file as evidence
+                            ' instead of deleting it.
+                            Log.Error eelWarning, _
+                                T("Unexpected worker result in {0}", var0:=strFile), _
+                                ModuleName(Me) & ".PollJobResults"
+                            Me.ReturnWorker CStr(varKey), Empty
+                            If oFS.FileExists(strFile & ".bad") Then
+                                oFS.DeleteFile strFile & ".bad"
+                            End If
+                            oFS.MoveFile strFile, strFile & ".bad"
+                    End Select
+                End If
+            End If
+        End If
+    Next varKey
+
+    CatchAny eelWarning, "Error reading worker result files", _
+        ModuleName(Me) & ".PollJobResults"
+
+End Sub
 
 
 '---------------------------------------------------------------------------------------
@@ -446,7 +646,7 @@ Sub Main()
     Dim strKey
     Dim strValue
     Dim strAction
-    Dim strCurrent
+    Dim blnNeedsApp
     Dim objProject
     Dim varReturn
 
@@ -463,62 +663,59 @@ Sub Main()
 
     ' The first argument should be the path of the current database
     strValue = WScript.Arguments(0)
-    If Not objFSO.FileExists(strValue) Then
-        WorkerLog "Database file must exist: " & strValue
-        WScript.Quit
-    End If
 
     ' The second argument is the key, and the third the action
     strKey = WScript.Arguments(1)
     strAction = WScript.Arguments(2)
 
-    ' Get a reference to the database application. Binding by file path fails when the
-    ' path is the add-in itself: the .accda extension is registered with a ProgID that
-    ' has no CLSID, so COM cannot bind it. That is the case whenever the operation is
-    ' driven from the add-in file. Leaving the error unhandled shows a Windows Script
-    ' Host dialog that blocks this script until somebody dismisses it, and the caller
-    ' waits out its whole timeout.
+    ' A variable that was never assigned is Empty rather than Nothing in VBScript, and
+    ' the "Is Nothing" tests below raise an error and take the branch anyway, so the
+    ' reference has to be initialized whether or not we go on to bind.
     Set objApp = Nothing
-    On Error Resume Next
-    Set objApp = GetObject(strValue)
-    If Err.Number <> 0 Then
-        Err.Clear
-        ' Attaching to whatever instance happens to be running is only safe for a job
-        ' that does not touch database objects. With two instances open, the wrong one
-        ' would receive DeleteDatabaseObject or RenameDatabaseObject and would delete or
-        ' rename in the wrong database, so the fallback is limited to the read-only
-        ' accessibility check.
-        If strAction = "CheckDatabaseAccessible" Then
-            Set objApp = GetObject(, "Access.Application")
-            If Err.Number <> 0 Then
-                Err.Clear
-                Set objApp = Nothing
-            Else
-                ' And the instance still has to be the one holding the path we were
-                ' given. Reading CurrentProject can itself fail, and an empty value has
-                ' to count as "not a match" so that the instance is rejected.
-                strCurrent = ""
-                strCurrent = objApp.CurrentProject.FullName
-                Err.Clear
-                If StrComp(strCurrent, strValue, vbTextCompare) <> 0 Then
-                    WorkerLog "Ignoring the Access instance on " & strCurrent & _
-                        ", which is not " & strValue & "."
-                    Set objApp = Nothing
-                End If
-            End If
-        End If
-    End If
-    If objApp Is Nothing Then
-        WorkerLog "Could not attach to Access for " & strValue & " (action " & _
-            strAction & "). No callback was sent, so the caller will time out."
-        WScript.Quit
-    End If
 
-    ' Best effort: the VBProjects collection can be in flux while a database is being
-    ' reopened, and failing to set the active project is not fatal here.
-    Set objApp.VBE.ActiveVBProject = CurrentVBProject(objApp)
-    Err.Clear
-    On Error GoTo 0
+    ' Not every action needs the Access instance. CheckDatabaseAccessible builds its own
+    ' DAO engine, opens the file and reports a value: the only thing it ever used the
+    ' instance for was handing the answer back. That is a dependency taken out purely in
+    ' order to talk, and it is the one that fails when the current database is the add-in
+    ' itself, so this action reports through a result file and never binds. An action not
+    ' listed here keeps binding, which is the safe default for anything added later.
+    blnNeedsApp = True
+    If strAction = "CheckDatabaseAccessible" Then blnNeedsApp = False
+
+    If blnNeedsApp Then
+
+        ' Arguments(0) is the target of the bind, so it has to be openable. That is not
+        ' an invariant: a full build renames the database to _VCSBackup, and until the
+        ' new one exists the path resolves to nothing. An action that does not bind has
+        ' no use for it, which is why this guard lives inside here.
+        If Not objFSO.FileExists(strValue) Then
+            WorkerLog "Database file must exist: " & strValue
+            WScript.Quit
+        End If
+
+        ' Get a reference to the database application. Binding by file path fails when
+        ' the path is the add-in itself: the .accda extension is registered with a
+        ' ProgID that has no CLSID, so COM cannot bind it. That is the case whenever the
+        ' operation is driven from the add-in file. Leaving the error unhandled shows a
+        ' Windows Script Host dialog that blocks this script until somebody dismisses
+        ' it, and the caller waits out its whole timeout.
+        On Error Resume Next
+        Set objApp = GetObject(strValue)
+        Err.Clear
+        If objApp Is Nothing Then
+            On Error GoTo 0
+            WorkerLog "Could not attach to Access for " & strValue & " (action " & _
+                strAction & "). No result was reported, so the caller will time out."
+            WScript.Quit
+        End If
+
+        ' Best effort: the VBProjects collection can be in flux while a database is
+        ' being reopened, and failing to set the active project is not fatal here.
+        Set objApp.VBE.ActiveVBProject = CurrentVBProject(objApp)
+        Err.Clear
+        On Error GoTo 0
+
+    End If
 
     ' Determine specified action (More complex actions can be split out into subs)
     Select Case strAction
@@ -558,6 +755,11 @@ Sub Main()
             WorkerLog "Unknown action: " & strAction
 
     End Select
+
+    ' Report the result. An action that never bound has no COM channel to answer
+    ' through, and answers by writing a file that the caller polls for. An action that
+    ' did bind keeps calling back below, because it holds the instance anyway.
+    If Not blnNeedsApp Then WriteJobResult objFSO, strKey, varReturn
 
     ' Make sure we still have a valid reference to the application before
     ' attempting any callback operations.
@@ -619,6 +821,84 @@ Sub WorkerLog(strMessage)
     objFile.Close
 
 End Sub
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : WriteJobResult
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 8/22/2026
+' Purpose   : Report a job result through a file instead of a COM callback, for an
+'           : action that does not need the Access instance to do its work.
+'           : The file is named after the job key, which is unique to each launch, so a
+'           : file left behind by an earlier run can never be read as this answer.
+'           : Written under a temporary name and renamed, because a rename is atomic on
+'           : the same volume: the caller polling for the file cannot catch it half
+'           : written. The value goes out as 1 or 0 rather than as a boolean, so nothing
+'           : in the channel depends on locale or on string formatting.
+'           : The folder is the one clsWorker.JobResultFolder builds, and is created
+'           : here as well: a missing folder would leave the caller with no answer and
+'           : nothing to look at.
+'---------------------------------------------------------------------------------------
+'
+Sub WriteJobResult(objFSO, strKey, varValue)
+
+    Dim strFolder
+    Dim strFile
+    Dim strTemp
+    Dim objOut
+
+    On Error Resume Next
+
+    ' No value means no answer, and no answer is the caller's third state. Writing a
+    ' file here would turn it into a definite "not accessible" instead.
+    If IsEmpty(varValue) Then Exit Sub
+
+    strFolder = objFSO.GetParentFolderName(WScript.ScriptFullName) & "\WorkerJobs"
+    If Not objFSO.FolderExists(strFolder) Then objFSO.CreateFolder strFolder
+
+    ' A CreateFolder that had nothing to do still leaves Err set, and the success path
+    ' of this script must not write anything to the log.
+    Err.Clear
+
+    strFile = strFolder & "\" & strKey & ".result"
+    strTemp = strFile & ".tmp"
+
+    Set objOut = objFSO.CreateTextFile(strTemp, True)
+    If ReportJobError("create " & strTemp) Then Exit Sub
+
+    If varValue Then
+        objOut.WriteLine "1"
+    Else
+        objOut.WriteLine "0"
+    End If
+    objOut.Close
+    Set objOut = Nothing
+    If ReportJobError("write " & strTemp) Then Exit Sub
+
+    If objFSO.FileExists(strFile) Then objFSO.DeleteFile strFile
+    objFSO.MoveFile strTemp, strFile
+    If ReportJobError("publish " & strFile) Then Exit Sub
+
+End Sub
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : ReportJobError
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 8/22/2026
+' Purpose   : Log the pending error, if any, naming the step that raised it, and report
+'           : whether the caller should stop. Checked after each step of WriteJobResult
+'           : because a single check at the end would log the last error rather than the
+'           : one that actually broke the chain.
+'---------------------------------------------------------------------------------------
+'
+Function ReportJobError(strWhat)
+    If Err.Number <> 0 Then
+        WorkerLog "Could not " & strWhat & ": " & Err.Number & " " & Err.Description
+        Err.Clear
+        ReportJobError = True
+    End If
+End Function
 
 
 '---------------------------------------------------------------------------------------

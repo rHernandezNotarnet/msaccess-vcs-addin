@@ -15,3 +15,7 @@ Public KeyHash As String
 Public Action As String
 Public Start As Double
 Public Timeout As Double
+
+' File the worker writes its return value to, for a job that reports through the
+' file channel instead of a COM callback. (See clsWorker.PollJobResults.)
+Public ResultFile As String
