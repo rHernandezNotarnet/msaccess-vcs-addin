@@ -514,7 +514,7 @@ Public Sub Build(strSourceFolder As String, blnFullBuild As Boolean _
     ' Uses an out-of-process worker to detect the engine-level lock state
     ' that an in-process check cannot see.
     If DatabaseFileOpen Then
-        If Not Worker.IsDatabaseAccessible Then
+        If Not Worker.IsDatabaseAccessible(strPath) Then
             Log.Add T("Reopening database in shared mode...")
             Log.Flush
             Perf.OperationStart "Reopen DB (shared mode)"

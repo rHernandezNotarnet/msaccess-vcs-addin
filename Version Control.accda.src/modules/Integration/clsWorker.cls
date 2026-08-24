@@ -72,11 +72,19 @@ End Function
 '           : an out-of-process DAO connection test via the worker script. This detects
 '           : the JET/ACE engine-level lock state (error 3734) that an in-process check
 '           : cannot detect.
+'           : Pass the path of the database to test. Falling back to the caller's
+'           : CurrentProject tests the add-in file itself whenever the operation is
+'           : driven from the add-in, which is not what the caller is asking about.
 '---------------------------------------------------------------------------------------
 '
-Public Function IsDatabaseAccessible() As Boolean
+Public Function IsDatabaseAccessible(Optional strDatabasePath As String) As Boolean
+
+    Dim strPath As String
+
+    strPath = strDatabasePath
+    If Len(strPath) = 0 Then strPath = CurrentProject.FullName
     m_varLastResult = Empty
-    CallWorker "DbAccessCheck", 10, "CheckDatabaseAccessible"
+    CallWorker "DbAccessCheck", 10, "CheckDatabaseAccessible", """" & strPath & """"
     Me.WaitForQueue 10, "CheckDatabaseAccessible", 0.1
     IsDatabaseAccessible = CBool(m_varLastResult)
 End Function
@@ -437,33 +445,83 @@ Sub Main()
     Dim strLibPath
     Dim strKey
     Dim strValue
+    Dim strAction
+    Dim strCurrent
+    Dim objProject
     Dim varReturn
 
 
     Set objFSO = CreateObject("Scripting.FileSystemObject")
 
     ' We are expecting some very specific command line arguments in this worker script.
-    If WScript.Arguments.Count < 2 Then
-        MsgBox "Invalid arguments provided to worker script", vbExclamation
+    ' Three at a minimum: database path, job key and action. Accepting two would raise
+    ' an unhandled error further down, where the action is read.
+    If WScript.Arguments.Count < 3 Then
+        WorkerLog "Invalid arguments provided to worker script"
         WScript.Quit
     End If
 
     ' The first argument should be the path of the current database
     strValue = WScript.Arguments(0)
     If Not objFSO.FileExists(strValue) Then
-        MsgBox "Database file must exist", vbExclamation
+        WorkerLog "Database file must exist: " & strValue
         WScript.Quit
-    Else
-        ' Get a reference to the database application
-        Set objApp = GetObject(strValue)
-        Set objApp.VBE.ActiveVBProject = CurrentVBProject(objApp)
     End If
 
-    ' The second argument should be the key
+    ' The second argument is the key, and the third the action
     strKey = WScript.Arguments(1)
+    strAction = WScript.Arguments(2)
+
+    ' Get a reference to the database application. Binding by file path fails when the
+    ' path is the add-in itself: the .accda extension is registered with a ProgID that
+    ' has no CLSID, so COM cannot bind it. That is the case whenever the operation is
+    ' driven from the add-in file. Leaving the error unhandled shows a Windows Script
+    ' Host dialog that blocks this script until somebody dismisses it, and the caller
+    ' waits out its whole timeout.
+    Set objApp = Nothing
+    On Error Resume Next
+    Set objApp = GetObject(strValue)
+    If Err.Number <> 0 Then
+        Err.Clear
+        ' Attaching to whatever instance happens to be running is only safe for a job
+        ' that does not touch database objects. With two instances open, the wrong one
+        ' would receive DeleteDatabaseObject or RenameDatabaseObject and would delete or
+        ' rename in the wrong database, so the fallback is limited to the read-only
+        ' accessibility check.
+        If strAction = "CheckDatabaseAccessible" Then
+            Set objApp = GetObject(, "Access.Application")
+            If Err.Number <> 0 Then
+                Err.Clear
+                Set objApp = Nothing
+            Else
+                ' And the instance still has to be the one holding the path we were
+                ' given. Reading CurrentProject can itself fail, and an empty value has
+                ' to count as "not a match" so that the instance is rejected.
+                strCurrent = ""
+                strCurrent = objApp.CurrentProject.FullName
+                Err.Clear
+                If StrComp(strCurrent, strValue, vbTextCompare) <> 0 Then
+                    WorkerLog "Ignoring the Access instance on " & strCurrent & _
+                        ", which is not " & strValue & "."
+                    Set objApp = Nothing
+                End If
+            End If
+        End If
+    End If
+    If objApp Is Nothing Then
+        WorkerLog "Could not attach to Access for " & strValue & " (action " & _
+            strAction & "). No callback was sent, so the caller will time out."
+        WScript.Quit
+    End If
+
+    ' Best effort: the VBProjects collection can be in flux while a database is being
+    ' reopened, and failing to set the active project is not fatal here.
+    Set objApp.VBE.ActiveVBProject = CurrentVBProject(objApp)
+    Err.Clear
+    On Error GoTo 0
 
     ' Determine specified action (More complex actions can be split out into subs)
-    Select Case WScript.Arguments(2)
+    Select Case strAction
 
         Case "DeleteDatabaseObject"
             ' Type, Name
@@ -486,10 +544,18 @@ Sub Main()
             BuildAndInstall objApp, WScript.Arguments(3)
 
         Case "CheckDatabaseAccessible"
-            varReturn = CheckDatabaseAccessible(WScript.Arguments(0))
+            ' The path to test is passed as a parameter, because Arguments(0) is the
+            ' caller's CurrentProject, which is the add-in file itself whenever the
+            ' operation is driven from the add-in. Testing that answers the wrong
+            ' question. Callers that pass no parameter keep the old behavior.
+            If WScript.Arguments.Count > 3 Then
+                varReturn = CheckDatabaseAccessible(WScript.Arguments(3))
+            Else
+                varReturn = CheckDatabaseAccessible(WScript.Arguments(0))
+            End If
 
         Case Else
-            MsgBox "Unknown Action: " & WScript.Arguments(1), vbExclamation
+            WorkerLog "Unknown action: " & strAction
 
     End Select
 
@@ -497,15 +563,60 @@ Sub Main()
     ' attempting any callback operations.
     If Not objApp Is Nothing Then
 
-        ' Build path to library so we can ensure that we are calling
-        ' the add-in function, not a function in the current database.
-        strLibPath = GetAddInVBProject(objApp).FileName
-        ' Remove file extension from library path.
-        strLibPath = Left(strLibPath, Len(strLibPath) - Len(".accda"))
+        ' GetAddInVBProject leaves its return value unassigned when no matching project
+        ' is found, and the VBProjects collection can be in flux while a database is
+        ' reopened, so reading .FileName off it raises 424. Uncaught, that shows the
+        ' Windows Script Host dialog this script exists to avoid, in the one branch a
+        ' build actually reaches.
+        Set objProject = Nothing
+        On Error Resume Next
+        Set objProject = GetAddInVBProject(objApp)
+        Err.Clear
+        If objProject Is Nothing Then
+            WorkerLog "Could not find the add-in VB project to call back into for " & _
+                strAction & ". The caller will wait out its timeout."
+        Else
+            ' Build path to library so we can ensure that we are calling
+            ' the add-in function, not a function in the current database.
+            strLibPath = objProject.FileName
+            ' Remove file extension from library path.
+            strLibPath = Left(strLibPath, Len(strLibPath) - Len(".accda"))
 
-        ' Return key to caller to signal job completion
-        objApp.Run strLibPath & ".WorkerCallback", strKey, varReturn
+            ' Return key to caller to signal job completion
+            objApp.Run strLibPath & ".WorkerCallback", strKey, varReturn
+            If Err.Number <> 0 Then
+                WorkerLog "Callback failed for " & strAction & ": " & Err.Number & " " & _
+                    Err.Description
+                Err.Clear
+            End If
+        End If
+        On Error GoTo 0
     End If
+
+End Sub
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : WorkerLog
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 8/21/2026
+' Purpose   : Append a line to Worker.log, next to the worker script. This script runs
+'           : unattended, launched hidden by Shell(), so a failure has to leave a trace
+'           : on disk. A dialog cannot be dismissed by anyone and blocks the script,
+'           : which turns a failed job into the caller's full timeout.
+'---------------------------------------------------------------------------------------
+'
+Sub WorkerLog(strMessage)
+
+    Dim objLogFSO
+    Dim objFile
+
+    On Error Resume Next
+    Set objLogFSO = CreateObject("Scripting.FileSystemObject")
+    Set objFile = objLogFSO.OpenTextFile(objLogFSO.GetParentFolderName( _
+        WScript.ScriptFullName) & "\Worker.log", 8, True)
+    objFile.WriteLine Now & vbTab & strMessage
+    objFile.Close
 
 End Sub
 
