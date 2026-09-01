@@ -567,6 +567,7 @@ Public Sub TestUserTableWithSystemPrefixIsExported()
     Dim varItem As Variant
     Dim blnFound As Boolean
     Dim blnSystemLeaked As Boolean
+    Dim blnNoSystemAttribute As Boolean
 
     DropTestTable TEST_TABLE_SYSTEM_PREFIX
 
@@ -577,8 +578,10 @@ Public Sub TestUserTableWithSystemPrefixIsExported()
     RefreshTableCollections dbs
 
     ' The premise of the fix: the prefix carries no attribute of its own.
-    TestAssert (dbs.TableDefs(TEST_TABLE_SYSTEM_PREFIX).Attributes And dbSystemObject) = 0, _
-        "a user table named MSys* carries no system attribute"
+    ' Assign the comparison first: a Sub call whose first argument opens with a
+    ' parenthesis does not compile in VBA.
+    blnNoSystemAttribute = ((dbs.TableDefs(TEST_TABLE_SYSTEM_PREFIX).Attributes And dbSystemObject) = 0)
+    TestAssert blnNoSystemAttribute, "a user table named MSys* carries no system attribute"
 
     ' Access GetAllFromDB through the IDbComponent interface (same pattern as modExport)
     Set cCategory = New clsDbTableDef
