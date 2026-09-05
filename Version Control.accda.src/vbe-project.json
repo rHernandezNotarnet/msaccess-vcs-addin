@@ -5,7 +5,7 @@
   },
   "Items": {
     "Name": "MSAccessVCS",
-    "Description": "Version 5.0.1 deployed on 7/4/2026",
+    "Description": "notarnet-v5.1.1 - reporta 5.1.0 (upstream dev 878fe94b) + 3 parches Notarnet",
     "FileName": "Version Control.accda",
     "HelpFile": "",
     "HelpContextId": 0,
