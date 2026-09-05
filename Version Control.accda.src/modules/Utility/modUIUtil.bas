@@ -46,9 +46,11 @@ End Function
 ' Procedure : PromptWouldDisplay
 ' Author    : Adam Waller
 ' Date      : 8/21/2026
-' Purpose   : The single rule deciding whether a prompt blocks or is logged. A silent
-'           : operation suppresses everything except a prompt the user's own gesture
-'           : asked for, and even that requires an attended root.
+' Purpose   : The single rule deciding whether a prompt blocks or is logged. An
+'           : unattended root suppresses everything: there is nobody to dismiss the
+'           : dialog, so a prompt there is a hang, not a question. Below that, a
+'           : silent operation suppresses everything except a prompt the user's own
+'           : gesture asked for.
 '           : A test run driving this project suppresses everything, gestures included:
 '           : the run is the caller, there is no gesture behind the prompt, and a dialog
 '           : stalls the suite. This is the only signal available when the run is hosted
@@ -59,8 +61,26 @@ End Function
 '
 Public Function PromptWouldDisplay(Optional blnUserGesturePrompt As Boolean = False) As Boolean
     If modTestAssert.TestRunActive Then Exit Function
-    PromptWouldDisplay = (Operation.InteractionMode = eimNormal) _
-        Or (blnUserGesturePrompt And Operation.Attended)
+    PromptWouldDisplay = PromptPolicyAllows(Operation.InteractionMode, Operation.Attended, _
+        blnUserGesturePrompt)
+End Function
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : PromptPolicyAllows
+' Author    : Ricardo Hernandez
+' Date      : 9/5/2026
+' Purpose   : The rule itself, with the operation state passed in rather than read from
+'           : the singletons, so the suite can assert every combination without a live
+'           : root and without a path that could reach a dialog.
+'---------------------------------------------------------------------------------------
+'
+Public Function PromptPolicyAllows(eimMode As eInteractionMode, blnAttended As Boolean, _
+    Optional blnUserGesturePrompt As Boolean = False) As Boolean
+    ' Nobody is there to answer. Everything a prompt could ask goes to the log, and
+    ' the caller gets the default result instead of a dialog it can never dismiss.
+    If Not blnAttended Then Exit Function
+    PromptPolicyAllows = (eimMode = eimNormal) Or blnUserGesturePrompt
 End Function
 
 
