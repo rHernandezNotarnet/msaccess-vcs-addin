@@ -11,6 +11,9 @@
 '           : database is in. So the contract asserted here is the one every hosted
 '           : project gets: modTestAssert.TestRunActive is true, and PromptWouldDisplay is
 '           : false for every kind of prompt.
+'           : The same module also covers the other half of the rule, which has nothing
+'           : to do with a test run: a root nobody is attending never gets a dialog,
+'           : whoever asked for it. That is the state every API and MCP call arrives in.
 '           : MsgBox2 is only called where suppression is already established, and never
 '           : with the user-gesture flag.
 '           : Run: ?VCS.RunTests("modTestPromptSuppression")
@@ -68,4 +71,47 @@ Public Sub TestSilentMsgBox2ReturnsDefaultResult()
     TestAssert True, "precondition: prompts are suppressed"
     intResult = MsgBox2("Suppressed prompt", "line1", , vbYesNo, , vbNo)
     TestAssert intResult = vbNo, "suppressed MsgBox2 returns the unattended default"
+End Sub
+
+
+Public Sub TestUnattendedRootSuppressesEveryPrompt()
+    ' The state an API or MCP call arrives in: nothing asked for silence, and the root
+    ' captured Attended = False from the automation source. Until this was covered, an
+    ' error raised inside VCS.ImportObject reached MsgBox2 and blocked the COM caller
+    ' until the Access process was killed.
+    TestAssert Not PromptPolicyAllows(eimNormal, blnAttended:=False), _
+        "ordinary prompt suppressed on an unattended root in normal mode"
+    TestAssert Not PromptPolicyAllows(eimNormal, blnAttended:=False, blnUserGesturePrompt:=True), _
+        "gesture prompt suppressed on an unattended root: there was no gesture"
+    TestAssert Not PromptPolicyAllows(eimSilent, blnAttended:=False), _
+        "an unattended root is suppressed in silent mode too"
+End Sub
+
+
+Public Sub TestAttendedRootKeepsItsDialogs()
+    ' Suppressing an unattended root must not silence the person at the ribbon.
+    TestAssert PromptPolicyAllows(eimNormal, blnAttended:=True), _
+        "an attended operation in normal mode still prompts"
+    TestAssert Not PromptPolicyAllows(eimSilent, blnAttended:=True), _
+        "silent mode still suppresses an ordinary prompt"
+    TestAssert PromptPolicyAllows(eimSilent, blnAttended:=True, blnUserGesturePrompt:=True), _
+        "a gesture prompt still outlives silent mode when a person is driving"
+End Sub
+
+
+Public Sub TestAutomationRootIsUnattendedAndSuppressed()
+    ' Ties the rule to the state clsOperation actually produces for an API caller, so
+    ' the two cannot drift apart. Runs on a private instance, clear of the singleton.
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    Set cOp = New clsOperation
+    cOp.Source = eosExternalAPI
+    Set cRoot = cOp.TryBeginRoot(eotOther)
+    TestAssert Not cRoot Is Nothing, "root acquired on the private instance"
+    TestAssert Not cOp.Attended, "an external API root is unattended"
+    TestAssert cOp.InteractionMode = eimNormal, "nothing asked for silence on the way in"
+    TestAssert Not PromptPolicyAllows(cOp.InteractionMode, cOp.Attended), _
+        "the state an API call arrives in suppresses prompts"
+    cRoot.Complete eorSuccess
 End Sub
