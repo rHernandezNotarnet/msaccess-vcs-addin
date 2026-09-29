@@ -411,6 +411,53 @@ Public Sub TestNormalizeCasing_19_MixedLines()
 End Sub
 
 
+Public Sub TestNormalizeCasing_20_UpperRemOnLaterLine()
+    AssertNormalized "Dim A" & vbCrLf & "REM Nota X" & vbCrLf & "Call REMOVE(A)", _
+        "dim a" & vbCrLf & "REM Nota X" & vbCrLf & "call remove(a)", _
+        "REM in upper case on a later line is a comment, REMOVE is not"
+End Sub
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : TestNormalizeCasing_21_LargeModule
+' Author    : Adam Waller
+' Date      : 9/29/2026
+' Purpose   : A module of about 500 KB, with strings, comments and Rem on every few
+'           : lines, must come out right and fast. With text comparisons each search
+'           : cost the length of the whole module, and this took over a minute.
+'---------------------------------------------------------------------------------------
+'
+Public Sub TestNormalizeCasing_21_LargeModule()
+
+    Const clngBlocks As Long = 4000
+
+    Dim strBlock As String
+    Dim strExpected As String
+    Dim strInput As String
+    Dim strOutput As String
+    Dim sngStart As Single
+    Dim sngSeconds As Single
+
+    strBlock = "    s = ""Texto Con Caja"" ' Comentario Con Caja" & vbCrLf & _
+        "    Call RemoveItem(X): Rem Nota Con Caja" & vbCrLf & _
+        "    Dim Remanente As Long" & vbCrLf
+    strExpected = "    s = ""Texto Con Caja"" ' Comentario Con Caja" & vbCrLf & _
+        "    call removeitem(x): Rem Nota Con Caja" & vbCrLf & _
+        "    dim remanente as long" & vbCrLf
+    strInput = Replace(Space$(clngBlocks), " ", strBlock)
+    strExpected = Replace(Space$(clngBlocks), " ", strExpected)
+
+    sngStart = Timer
+    strOutput = NormalizeVbaCodeCasing(strInput)
+    sngSeconds = Timer - sngStart
+
+    TestAssert Len(strInput) > 450000, "the module is large"
+    TestAssert StrComp(strOutput, strExpected, vbBinaryCompare) = 0, "large module normalized as expected"
+    TestAssert sngSeconds < 2, "large module normalized in under 2 seconds (took " & sngSeconds & " s)"
+
+End Sub
+
+
 '---------------------------------------------------------------------------------------
 ' Procedure : TestCodeTextHash_IgnoresCodeCasing
 ' Author    : Adam Waller
