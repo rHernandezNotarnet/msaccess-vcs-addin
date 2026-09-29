@@ -496,6 +496,9 @@ End Function
 '           : vbCrLf. A string never continues past the end of its physical line.
 '           : A comment (' or Rem) runs to the end of the line, and on to the next line
 '           : if that one ends with a line continuation (space or tab, then underscore).
+'           : Every search is binary. Under Option Compare Database a text search costs
+'           : the length of the whole string on each call (InStrRev included), which
+'           : made this quadratic on large modules. "rem" is found in the lower case copy.
 '---------------------------------------------------------------------------------------
 '
 Public Function NormalizeVbaCodeCasing(strCode As String) As String
@@ -529,17 +532,17 @@ Public Function NormalizeVbaCodeCasing(strCode As String) As String
         ' Look for the next delimiter of each kind, reusing the earlier result
         ' until we have moved past it.
         If lngQuote < lngPos Then
-            lngQuote = InStr(lngPos, strCode, """")
+            lngQuote = InStr(lngPos, strCode, """", vbBinaryCompare)
             If lngQuote = 0 Then lngQuote = lngLen + 1
         End If
         If lngApos < lngPos Then
-            lngApos = InStr(lngPos, strCode, "'")
+            lngApos = InStr(lngPos, strCode, "'", vbBinaryCompare)
             If lngApos = 0 Then lngApos = lngLen + 1
         End If
         If lngRem < lngPos Then
             lngScan = lngPos
             Do
-                lngRem = InStr(lngScan, strCode, "rem", vbTextCompare)
+                lngRem = InStr(lngScan, strOut, "rem", vbBinaryCompare)
                 If lngRem = 0 Then
                     lngRem = lngLen + 1
                     Exit Do
@@ -556,14 +559,14 @@ Public Function NormalizeVbaCodeCasing(strCode As String) As String
         If lngNext > lngLen Then Exit Do
 
         ' End of the physical line
-        lngEol = InStr(lngNext, strCode, vbCrLf)
+        lngEol = InStr(lngNext, strCode, vbCrLf, vbBinaryCompare)
         If lngEol = 0 Then lngEol = lngLen + 1
 
         If lngNext = lngQuote Then
             ' String literal. A doubled quote is an escaped quote.
             lngScan = lngNext + 1
             Do
-                lngClose = InStr(lngScan, strCode, """")
+                lngClose = InStr(lngScan, strCode, """", vbBinaryCompare)
                 If lngClose = 0 Or lngClose >= lngEol Then
                     ' Not closed, so it ends with the line
                     lngEnd = lngEol - 1
@@ -582,7 +585,7 @@ Public Function NormalizeVbaCodeCasing(strCode As String) As String
                 If Mid$(strCode, lngEol - 1, 1) <> "_" Then Exit Do
                 strChar = Mid$(strCode, lngEol - 2, 1)
                 If strChar <> " " And strChar <> vbTab Then Exit Do
-                lngEol = InStr(lngEol + 2, strCode, vbCrLf)
+                lngEol = InStr(lngEol + 2, strCode, vbCrLf, vbBinaryCompare)
                 If lngEol = 0 Then lngEol = lngLen + 1
             Loop
             lngEnd = lngEol - 1
@@ -622,7 +625,7 @@ Private Function IsRemComment(strCode As String, lngPos As Long, lngLen As Long)
 
     ' What precedes it on the same line
     lngStart = 1
-    If lngPos > 1 Then lngStart = InStrRev(strCode, vbLf, lngPos - 1) + 1
+    If lngPos > 1 Then lngStart = InStrRev(strCode, vbLf, lngPos - 1, vbBinaryCompare) + 1
     strBefore = Trim$(Replace(Mid$(strCode, lngStart, lngPos - lngStart), vbTab, " "))
     If Len(strBefore) = 0 Then
         IsRemComment = True
