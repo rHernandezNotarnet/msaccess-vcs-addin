@@ -83,6 +83,43 @@ contradictory guidance.
 
 ---
 
+## 2026-09-29 — Binary searches in NormalizeVbaCodeCasing
+
+**Trigger**: after the case-insensitive code hash, "Get VBA Hash" in the performance
+report of a full export went from seconds to minutes on databases with large modules,
+growing with the square of the module size. `modHash` has `Option Compare Database`, so
+the five `InStr` without a compare argument compared as text, and so did the `InStrRev`
+in `IsRemComment`, although the VBA documentation says `InStrRev` defaults to binary.
+Measured in the add-in itself on synthetic strings: a text `InStr` costs the length of
+the WHOLE string on every call (about 6 ms at 1.4 million characters), wherever it
+starts and however close the match is. A binary one costs 0.05 µs. The function makes
+one search per string, comment and line end, so the cost was the number of those times
+the module length.
+
+**Options explored**:
+- **A. Binary for the single-character and `vbCrLf` searches only.** Removes almost
+  all of the cost. What remains is the `"rem"` search (`vbTextCompare`) and the
+  `InStrRev`, one per `rem` found inside a word, and it still grows with the square.
+- **B. Also search `"rem"` in binary on `strOut`.** `strOut` is `LCase$` of the code,
+  and everything to the right of `lngPos` is still untouched (protected zones are only
+  copied back to the left of it), so it is the same search.
+- **C. `Option Compare Binary` for the whole module.** Changes every `=`, `Like` and
+  `Replace` in `modHash`, not only the searches. More to verify for no gain.
+
+**Decision**: B, with `vbBinaryCompare` explicit on all seven searches. The hash does
+not change: for every ANSI character, alone, next to each delimiter and in every pair,
+the text and binary searches return the same position, and the same holds for `"rem"`
+in text against binary on the lower case copy (340,224 cases, none different), and the
+output of the old and new function is identical byte for byte on real modules.
+`TestNormalizeCasing_21_LargeModule` normalizes a module of about 470 KB (84 s with the
+text searches, 0.03 s now) and fails if it takes 2 s or more.
+
+**Relevant files**:
+- `Version Control.accda.src/modules/Utility/modHash.bas` — `NormalizeVbaCodeCasing`, `IsRemComment`
+- `Version Control.accda.src/modules/Tests/FileIO/modTestHash.bas` — tests 20 and 21
+
+---
+
 ## 2026-09-29 — VBA code hash ignores the letter case the VBE rewrites
 
 **Trigger**: `GetCodeModuleHash` hashed `CodeModule.Lines` case-sensitively. The VBE
