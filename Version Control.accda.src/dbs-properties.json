@@ -121,7 +121,7 @@
       "Type": 4
     },
     "NotarnetBuild": {
-      "Value": "notarnet-v5.1.2 - reporta 5.1.2 (upstream dev 230da620) + 1 parche Notarnet",
+      "Value": "notarnet-v5.1.3 - reporta 5.1.2 (upstream dev 230da620) + 4 parches Notarnet",
       "Type": 10
     },
     "Never Cache": {
