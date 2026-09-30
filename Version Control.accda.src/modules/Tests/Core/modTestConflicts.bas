@@ -9,6 +9,9 @@
 Option Compare Database
 Option Explicit
 Option Private Module
+
+' Error level saved by ImportCasingFixtures and restored by RemoveCasingFixtures
+Private m_eelCasingSavedLevel As eErrorLevel
 '@Folder("Tests.Core")
 '@Tag("integration")
 
@@ -447,6 +450,11 @@ Private Function ImportCasingFixtures(cMod As IDbComponent, strHolderFile As Str
     RemoveTestImportFixtureModule "vcs_test_casing_holder"
     RemoveTestImportFixtureModule "vcs_test_casing_declarer"
 
+    ' Import skips indexing at eelError or above, and no operation begins in this
+    ' project during a test run to clear a level left by an earlier test.
+    m_eelCasingSavedLevel = Operation.ErrorLevel
+    Operation.ErrorLevel = eelNoError
+
     Set cMod = New clsDbModule
     cMod.Import strHolderFile
     If blnDeclarer Then cMod.Import strDeclarerFile
@@ -470,6 +478,7 @@ Private Sub RemoveCasingFixtures(cMod As IDbComponent, strHolderFile As String, 
         If VCSIndex.Exists(cMod, strHolderFile) Then VCSIndex.Remove cMod, strHolderFile
         If VCSIndex.Exists(cMod, strDeclarerFile) Then VCSIndex.Remove cMod, strDeclarerFile
     End If
+    Operation.ErrorLevel = m_eelCasingSavedLevel
 
 End Sub
 
