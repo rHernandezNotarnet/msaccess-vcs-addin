@@ -41,7 +41,7 @@
       "Type": 10
     },
     "AppVersion": {
-      "Value": "5.1.2",
+      "Value": "5.0.100",
       "Type": 10
     },
     "Auto Compact": {
@@ -121,7 +121,7 @@
       "Type": 4
     },
     "NotarnetBuild": {
-      "Value": "notarnet-v5.1.4 - reporta 5.1.2 (upstream dev 230da620) + 4 parches Notarnet",
+      "Value": "notarnet-v5.0.100 - reporta 5.0.100 (upstream dev 88686620) + 5 parches Notarnet",
       "Type": 10
     },
     "Never Cache": {
