@@ -316,6 +316,7 @@ Private Function ImportTableStructure(strFile As String, ByRef strName As String
     Dim strTempFile As String
     Dim strFileName As String
     Dim colBigIntFields As Collection
+    Dim colRequiredFields As Collection
 
     ' Full build reuses one instance; reset link-type cache per file.
     m_lngTableType = 0
@@ -347,6 +348,10 @@ Private Function ImportTableStructure(strFile As String, ByRef strName As String
             ' silently re-creates such fields as dbDecimal(38,0) instead. Detect them
             ' from the source XML before the (possibly temp-copied) file is gone.
             Set colBigIntFields = GetBigIntRepairFieldNamesFromTableDefXmlFile(strFile)
+
+            ' Application.ImportXML also creates every Yes/No field as Required, ignoring
+            ' the Required field property the XML carries for it.
+            Set colRequiredFields = GetRequiredRepairFieldNamesFromTableDefXmlFile(strFile)
 
             ' The ImportXML function does not properly handle UrlEncoded paths
             blnUseTemp = (InStr(1, strFile, "%") > 0)
@@ -390,6 +395,10 @@ Private Function ImportTableStructure(strFile As String, ByRef strName As String
 
             If Not blnImportFailed And colBigIntFields.Count > 0 Then
                 FixCorruptedBigIntFields strName, colBigIntFields
+            End If
+
+            If Not blnImportFailed And colRequiredFields.Count > 0 Then
+                FixImportedRequiredFields strName, colRequiredFields
             End If
 
         Case Else
@@ -1102,6 +1111,104 @@ Private Sub FixCorruptedBigIntFields(strTableName As String, colFieldNames As Co
             End If
         End If
     Next varName
+
+End Sub
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : GetRequiredRepairFieldNamesFromTableDefXmlFile
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 10/7/2026
+' Purpose   : Read a table-definition XML file and return the Yes/No fields that are not
+'           : Required, which Application.ImportXML will create as Required. Skips DOM
+'           : parsing when the table has no Yes/No field.
+'           : The caller runs this under On Error Resume Next and reports any pending
+'           : error as an ImportXML failure, so an error here is logged and cleared: a
+'           : failed scan costs the repair, never the import.
+'---------------------------------------------------------------------------------------
+'
+Private Function GetRequiredRepairFieldNamesFromTableDefXmlFile(strXmlFile As String) As Collection
+
+    Dim colNames As New Collection
+    Dim strXml As String
+
+    Set GetRequiredRepairFieldNamesFromTableDefXmlFile = colNames
+    If Not FSO.FileExists(strXmlFile) Then Exit Function
+
+    LogUnhandledErrors
+    On Error Resume Next
+
+    strXml = ReadFile(strXmlFile)
+    If InStr(1, strXml, "od:jetType=""yesno""", vbTextCompare) > 0 Then
+        Perf.OperationStart "Scan table XML for Required fields"
+        Set GetRequiredRepairFieldNamesFromTableDefXmlFile = GetRequiredRepairFieldNamesFromTableDefXml(strXml)
+        Perf.OperationEnd
+    End If
+
+    CatchAny eelWarning, "Unable to scan " & FSO.GetFileName(strXmlFile) & _
+        " for Required fields", ModuleName(Me) & ".GetRequiredRepairFieldNamesFromTableDefXmlFile"
+
+End Function
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : FixImportedRequiredFields
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 10/7/2026
+' Purpose   : Restore Required=False on Yes/No fields that Application.ImportXML created
+'           : as Required, as it does with every Yes/No field.
+'           : The result is read back once per table through a fresh CurrentDb handle,
+'           : as the dbBigInt repair does, so a silent no-op is reported. One handle per
+'           : table rather than per field: a table can carry dozens of Yes/No fields, and
+'           : CurrentDb refreshes the whole catalog each time it is called.
+'---------------------------------------------------------------------------------------
+'
+Private Sub FixImportedRequiredFields(strTableName As String, colFieldNames As Collection)
+
+    Const PROC As String = ".FixImportedRequiredFields"
+
+    Dim varName As Variant
+    Dim tdf As DAO.TableDef
+    Dim dbsVerify As DAO.Database
+    Dim blnRequired As Boolean
+    Dim lngRestored As Long
+
+    LogUnhandledErrors
+    On Error Resume Next
+
+    Set tdf = SharedDb.TableDefs(strTableName)
+    If CatchAny(eelWarning, "Unable to open " & strTableName & _
+        " to restore Required=False", ModuleName(Me) & PROC) Then Exit Sub
+
+    For Each varName In colFieldNames
+        tdf.Fields(CStr(varName)).Required = False
+        If Not CatchAny(eelWarning, "Unable to restore Required=False for " & _
+            strTableName & "." & varName, ModuleName(Me) & PROC) Then lngRestored = lngRestored + 1
+    Next varName
+
+    ' Keep the handle in a variable: a TableDef taken from an unassigned CurrentDb
+    ' outlives its database object and fails with error 3420.
+    Set dbsVerify = CurrentDb
+    Set tdf = dbsVerify.TableDefs(strTableName)
+    If CatchAny(eelWarning, "Unable to verify Required=False restoration for " & _
+        strTableName, ModuleName(Me) & PROC) Then Exit Sub
+
+    ' Read into a variable first: under On Error Resume Next a failing If condition
+    ' falls into the If block, which would report a failure that did not happen.
+    For Each varName In colFieldNames
+        blnRequired = False
+        blnRequired = tdf.Fields(CStr(varName)).Required
+        If CatchAny(eelWarning, "Unable to verify Required=False restoration for " & _
+            strTableName & "." & varName, ModuleName(Me) & PROC) Then
+            ' Already logged
+        ElseIf blnRequired Then
+            Log.Error eelWarning, "Required=False restoration did not take effect for " & _
+                strTableName & "." & varName, ModuleName(Me) & PROC
+        End If
+    Next varName
+
+    Log.Add T("    Restored Required=False on {0} field(s) of {1}.", _
+        var0:=lngRestored, var1:=strTableName), Options.ShowDebug
 
 End Sub
 
