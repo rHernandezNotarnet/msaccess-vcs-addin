@@ -425,11 +425,14 @@ End Property
 ' Date      : 10/9/2026
 ' Purpose   : A ribbon command is interactive by definition. Clear what an earlier
 '           : API/MCP call left behind in this instance, so the command is not treated
-'           : as unattended.
+'           : as unattended. That includes ForceUnattended: a headless entry sets it
+'           : before beginning its root and only Finish clears it, so a root that never
+'           : finishes leaves it set, and outside a root Attended reads it.
 '---------------------------------------------------------------------------------------
 '
 Public Sub ResetForInteractiveCommand()
     Me.Source = eosUserInterface
+    Me.ForceUnattended = False
 End Sub
 
 
