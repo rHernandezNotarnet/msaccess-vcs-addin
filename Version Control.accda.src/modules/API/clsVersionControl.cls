@@ -3127,6 +3127,13 @@ Private Function ExecuteTests(varFilters As Variant, blnFiltered As Boolean, _
         Exit Function
     End If
 
+    ' ForceUnattended must be set before the root begins: Attended is captured once, at
+    ' root creation, and is immutable for the life of the operation. It is set here,
+    ' before installing modTestAssert, because that install reports with a MsgBox2
+    ' before any root exists, and a headless run started from the Immediate Window has
+    ' a user-interface Source. Cleared below if the root is refused.
+    If blnHeadless Then Operation.ForceUnattended = True
+
     ' Ensure modTestAssert is present (installed silently in headless mode; an
     ' automation session has no one to answer a prompt)
     If Not TestAssertModuleExists Then
@@ -3178,12 +3185,12 @@ Private Function ExecuteTests(varFilters As Variant, blnFiltered As Boolean, _
         Exit Function
     End If
 
-    ' ForceUnattended must be set before the root begins: Attended is captured once, at
-    ' root creation, and is immutable for the life of the operation.
-    If blnHeadless Then Operation.ForceUnattended = True
-
     Set cRoot = Operation.TryBeginRoot(eotTestRun)
-    If cRoot Is Nothing Then Exit Function
+    If cRoot Is Nothing Then
+        ' Refused: no root of ours will Finish and clear it.
+        If blnHeadless Then Operation.ForceUnattended = False
+        Exit Function
+    End If
 
     Operation.InteractionMode = eimSilent
     Log.Active = True
