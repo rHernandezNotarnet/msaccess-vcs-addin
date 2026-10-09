@@ -140,3 +140,53 @@ Public Sub TestAutomationRootIsUnattendedAndSuppressed()
         "the state an API call arrives in suppresses prompts"
     cRoot.Complete eorSuccess
 End Sub
+
+
+Public Sub TestApiCallerIsUnattendedBeforeItsRoot()
+    ' Some API entry points prompt before they begin a root (MigrateDebugAssert never
+    ' begins one; ExecuteTests installs modTestAssert first). No root has captured
+    ' anything yet, so the incoming caller has to decide.
+    Dim cOp As clsOperation
+
+    Set cOp = New clsOperation
+    cOp.Source = eosExternalAPI
+    TestAssert Not cOp.Attended, "an API caller with no root yet is unattended"
+    cOp.Source = eosMCPTool
+    TestAssert Not cOp.Attended, "an MCP caller with no root yet is unattended"
+    cOp.Source = eosUserInterface
+    TestAssert cOp.Attended, "a ribbon caller with no root is attended"
+    cOp.ForceUnattended = True
+    TestAssert Not cOp.Attended, "ForceUnattended with no root is unattended"
+End Sub
+
+
+Public Sub TestRibbonAfterApiRootIsAttendedAgain()
+    ' The root's captured value describes that root only. Once it finishes, a ribbon
+    ' command - which resets Source - must not inherit "unattended" from the API call
+    ' that ran before it in the same Access instance.
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    Set cOp = New clsOperation
+    cOp.Source = eosExternalAPI
+    Set cRoot = cOp.TryBeginRoot(eotOther)
+    TestAssert Not cRoot Is Nothing, "root acquired on the private instance"
+    TestAssert Not cOp.Attended, "the API root is unattended while it runs"
+    cRoot.Complete eorSuccess
+    cOp.Source = eosUserInterface
+    TestAssert cOp.Attended, "a ribbon command after the API root is attended"
+End Sub
+
+
+Public Sub TestLiveRootKeepsItsCapturedAttended()
+    ' Inside a root the captured value still holds, whatever Source does meanwhile.
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    Set cOp = New clsOperation
+    cOp.Source = eosExternalAPI
+    Set cRoot = cOp.TryBeginRoot(eotOther)
+    cOp.Source = eosUserInterface
+    TestAssert Not cOp.Attended, "a live API root stays unattended when Source changes"
+    cRoot.Complete eorSuccess
+End Sub

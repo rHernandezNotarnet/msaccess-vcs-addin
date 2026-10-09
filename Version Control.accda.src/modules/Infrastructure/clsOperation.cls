@@ -398,8 +398,24 @@ Public Property Let InteractionMode(eimMode As eInteractionMode)
 End Property
 
 
+'---------------------------------------------------------------------------------------
+' Procedure : Attended
+' Author    : Ricardo Hernandez
+' Date      : 10/9/2026
+' Purpose   : Whether somebody is there to answer a prompt. Inside a root it is the value
+'           : the root captured when it began, for the life of the operation. Outside a
+'           : root that captured value describes the previous operation, so the incoming
+'           : caller decides instead, the same way ReportRefusal does: an API or MCP call
+'           : that prompts before its root begins is unattended, and a ribbon command that
+'           : follows an API call is attended again.
+'---------------------------------------------------------------------------------------
+'
 Public Property Get Attended() As Boolean
-    Attended = m_Root.Attended
+    If m_Root.State = eosReady Or Len(m_Root.Token) = 0 Then
+        Attended = Not (Me.AutomationSource Or Me.ForceUnattended)
+    Else
+        Attended = m_Root.Attended
+    End If
 End Property
 
 
