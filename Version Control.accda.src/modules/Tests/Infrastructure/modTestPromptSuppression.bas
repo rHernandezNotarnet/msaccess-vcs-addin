@@ -194,6 +194,29 @@ Public Sub TestRibbonCommandClearsAStrandedForceUnattended()
 End Sub
 
 
+Public Sub TestExpiredHeadlessRootLeavesNothingStranded()
+    ' A headless root sets ForceUnattended and silent mode. Finish clears both; a root
+    ' that stops pulsing is expired by Status instead, and that has to clear them too,
+    ' or the next ribbon command runs silent and its prompts answer their defaults.
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    Set cOp = New clsOperation
+    cOp.Source = eosExternalAPI
+    cOp.ForceUnattended = True
+    cOp.InteractionMode = eimSilent
+    Set cRoot = cOp.TryBeginRoot(eotOther)
+    TestAssert Not cRoot Is Nothing, "root acquired on the private instance"
+    cOp.Heartbeat = Now - 1
+    TestAssert cOp.Status = eosReady, "the stale root expired"
+    cOp.ResetForInteractiveCommand
+    TestAssert cOp.Attended, "attended after the ribbon reset"
+    TestAssert cOp.InteractionMode = eimNormal, "interaction mode normal after the ribbon reset"
+    TestAssert PromptPolicyAllows(cOp.InteractionMode, cOp.Attended), _
+        "a ribbon prompt after an expired headless root is shown"
+End Sub
+
+
 Public Sub TestLiveRootKeepsItsCapturedAttended()
     ' Inside a root the captured value still holds, whatever Source does meanwhile.
     Dim cOp As clsOperation
