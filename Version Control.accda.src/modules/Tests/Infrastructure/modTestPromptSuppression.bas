@@ -178,6 +178,22 @@ Public Sub TestRibbonAfterApiRootIsAttendedAgain()
 End Sub
 
 
+Public Sub TestRibbonCommandClearsAStrandedForceUnattended()
+    ' A headless entry sets ForceUnattended before it begins its root, and Finish is what
+    ' clears it. A root that never finishes leaves it set, and outside a root it would
+    ' make the next ribbon command unattended. The ribbon reset has to clear it too.
+    Dim cOp As clsOperation
+
+    Set cOp = New clsOperation
+    cOp.Source = eosExternalAPI
+    cOp.ForceUnattended = True
+    cOp.ResetForInteractiveCommand
+    TestAssert cOp.Source = eosUserInterface, "the ribbon reset restores the interactive source"
+    TestAssert Not cOp.ForceUnattended, "the ribbon reset clears a stranded ForceUnattended"
+    TestAssert cOp.Attended, "a ribbon command after a stranded ForceUnattended is attended"
+End Sub
+
+
 Public Sub TestLiveRootKeepsItsCapturedAttended()
     ' Inside a root the captured value still holds, whatever Source does meanwhile.
     Dim cOp As clsOperation

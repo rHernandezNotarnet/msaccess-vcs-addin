@@ -419,6 +419,20 @@ Public Property Get Attended() As Boolean
 End Property
 
 
+'---------------------------------------------------------------------------------------
+' Procedure : ResetForInteractiveCommand
+' Author    : Ricardo Hernandez
+' Date      : 10/9/2026
+' Purpose   : A ribbon command is interactive by definition. Clear what an earlier
+'           : API/MCP call left behind in this instance, so the command is not treated
+'           : as unattended.
+'---------------------------------------------------------------------------------------
+'
+Public Sub ResetForInteractiveCommand()
+    Me.Source = eosUserInterface
+End Sub
+
+
 Public Property Get CurrentRootToken() As String
     CurrentRootToken = m_Root.Token
 End Property
