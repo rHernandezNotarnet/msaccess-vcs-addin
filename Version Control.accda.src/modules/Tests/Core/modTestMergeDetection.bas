@@ -907,6 +907,216 @@ ErrHandler:
 End Sub
 
 
+'---------------------------------------------------------------------------------------
+' Procedure : TestMergeSkipsRelationFileOfSystemTables
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 10/9/2026
+' Purpose   : A source file of a relation on tables that are not exported (here the
+'           : navigation pane tables, under a GUID name an older export left behind) is
+'           : neither listed for build nor reported for merge. Before, the missing-object
+'           : check merged it on every run and Access refused it (error 3033). Two
+'           : controls: a relation between user tables that are missing is still reported,
+'           : and so is one on a user table whose name begins with MSys. A full build
+'           : lists relation files before it imports any table, so that table is missing
+'           : too, and its name alone must not exclude the relation.
+'---------------------------------------------------------------------------------------
+'
+Public Sub TestMergeSkipsRelationFileOfSystemTables()
+
+    Dim cRelation As IDbComponent
+    Dim strFolder As String
+    Dim strSystem As String
+    Dim strUser As String
+    Dim strUserMSys As String
+    Dim blnCreatedFolder As Boolean
+    Dim dFiles As Dictionary
+    Dim dModified As Dictionary
+
+    TestAssert GetSystemTableNames.Exists("MSysNavPaneGroups"), _
+        "precondition: MSysNavPaneGroups is a system table in this database"
+
+    Set cRelation = New clsDbRelation
+    strFolder = cRelation.BaseFolder
+    If Not FSO.FolderExists(strFolder) Then
+        FSO.CreateFolder strFolder
+        blnCreatedFolder = True
+    End If
+    strSystem = strFolder & "{0E5F7A10-0000-4000-8000-00000013333A}.json"
+    strUser = strFolder & "zzTestRelationUserTables.json"
+    strUserMSys = strFolder & "zzTestRelationUserMSysTable.json"
+    WriteFile GetTestRelationJson("{0E5F7A10-0000-4000-8000-00000013333A}", _
+        "MSysNavPaneGroups", "MSysNavPaneGroupToObjects", "Id", "GroupID"), strSystem
+    WriteFile GetTestRelationJson("zzTestRelationUserTables", _
+        "zzTestRelParent", "zzTestRelChild", "ID", "ParentID"), strUser
+    WriteFile GetTestRelationJson("zzTestRelationUserMSysTable", _
+        "MSysZzTestRelParent", "zzTestRelChild", "ID", "ParentID"), strUserMSys
+
+    ' New instance, so the cached file list sees the files just written.
+    Set cRelation = New clsDbRelation
+    Set dFiles = cRelation.GetFileList
+    TestAssert Not dFiles.Exists(strSystem), _
+        "relation file on system tables is not listed for build or merge"
+    TestAssert dFiles.Exists(strUser), _
+        "control: relation file on user tables is listed"
+    TestAssert dFiles.Exists(strUserMSys), _
+        "control: relation file on a missing user table named MSys* is listed"
+
+    Set dModified = VCSIndex.GetModifiedSourceFiles(cRelation)
+    TestAssert Not dModified.Exists(strSystem), _
+        "relation file on system tables is not reported as missing from the database"
+    TestAssert dModified.Exists(strUser), _
+        "control: relation file on missing user tables is still reported"
+    TestAssert dModified.Exists(strUserMSys), _
+        "control: relation file on a missing user table named MSys* is still reported"
+
+    VCSIndex.Remove cRelation, strSystem
+    VCSIndex.Remove cRelation, strUser
+    VCSIndex.Remove cRelation, strUserMSys
+    DeleteFile strSystem
+    DeleteFile strUser
+    DeleteFile strUserMSys
+    If blnCreatedFolder Then FSO.DeleteFolder StripSlash(strFolder), True
+
+End Sub
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : TestImportSkipsRelationOnSystemTables
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 10/9/2026
+' Purpose   : Importing a source file of a relation on system tables creates nothing and
+'           : raises no error.
+'---------------------------------------------------------------------------------------
+'
+Public Sub TestImportSkipsRelationOnSystemTables()
+
+    Dim cRelation As IDbComponent
+    Dim dbs As DAO.Database
+    Dim strFile As String
+    Dim strName As String
+    Dim lngBefore As Long
+    Dim lngError As Long
+    Dim blnFound As Boolean
+    Dim rel As DAO.Relation
+
+    strName = "{0E5F7A10-0000-4000-8000-00000013333B}"
+    strFile = GetTempFile & ".json"
+    WriteFile GetTestRelationJson(strName, _
+        "MSysNavPaneGroups", "MSysNavPaneGroupToObjects", "Id", "GroupID"), strFile
+
+    Set dbs = SharedDb
+    dbs.Relations.Refresh
+    lngBefore = dbs.Relations.Count
+    Set cRelation = New clsDbRelation
+    LogUnhandledErrors
+    On Error Resume Next
+    cRelation.Import strFile
+    lngError = Err.Number
+    Err.Clear
+
+    dbs.Relations.Refresh
+    For Each rel In dbs.Relations
+        If rel.Name = strName Then blnFound = True
+    Next rel
+    TestAssert lngError = 0, "import of a relation on system tables raises no error"
+    TestAssert Not blnFound, "relation on system tables is not created"
+    TestAssert dbs.Relations.Count = lngBefore, "no relation was added"
+
+    ' Leave the database as it was, even when the import created the relation.
+    If blnFound Then dbs.Relations.Delete strName
+    Err.Clear
+    DeleteFile strFile
+
+End Sub
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : TestExportSkipsRelationsOnSystemTables
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 10/9/2026
+' Purpose   : No relation that involves a system table is listed for export, whatever its
+'           : name. The test creates one under a GUID name on the navigation pane tables,
+'           : as Access sometimes does, and removes it afterwards; where Access refuses
+'           : to create it, only the relations already in the database are checked.
+'---------------------------------------------------------------------------------------
+'
+Public Sub TestExportSkipsRelationsOnSystemTables()
+
+    Dim cRelation As IDbComponent
+    Dim dbs As DAO.Database
+    Dim dSysTables As Dictionary
+    Dim dNames As Dictionary
+    Dim varItem As Variant
+    Dim rel As DAO.Relation
+    Dim strName As String
+    Dim blnCreated As Boolean
+    Dim lngChecked As Long
+
+    strName = "{0E5F7A10-0000-4000-8000-00000013333C}"
+    Set dbs = SharedDb
+
+    LogUnhandledErrors
+    On Error Resume Next
+    Set rel = dbs.CreateRelation(strName, "MSysNavPaneGroups", "MSysNavPaneGroupToObjects", _
+        dbRelationDontEnforce)
+    rel.Fields.Append rel.CreateField("Id")
+    rel.Fields("Id").ForeignName = "GroupID"
+    dbs.Relations.Append rel
+    blnCreated = (Err.Number = 0)
+    Err.Clear
+    dbs.Relations.Refresh
+
+    ' New instance, so the cached list sees the relation just created.
+    Set cRelation = New clsDbRelation
+    Set dNames = New Dictionary
+    dNames.CompareMode = TextCompare
+    For Each varItem In cRelation.GetAllFromDB.Items
+        dNames(varItem.Name) = True
+    Next varItem
+
+    Set dSysTables = GetSystemTableNames
+    For Each rel In dbs.Relations
+        If dSysTables.Exists(rel.Table) Or dSysTables.Exists(rel.ForeignTable) Then
+            lngChecked = lngChecked + 1
+            TestAssert Not dNames.Exists(rel.Name), _
+                "relation on a system table is not exported: " & rel.Name
+        End If
+    Next rel
+    If blnCreated Then
+        TestAssert lngChecked > 0, "the relation created on system tables was checked"
+    ElseIf lngChecked = 0 Then
+        TestAssert True, "SKIP: no relation on system tables here, and none could be created"
+    End If
+
+    If blnCreated Then dbs.Relations.Delete strName
+    Err.Clear
+
+End Sub
+
+
+Private Function GetTestRelationJson(strName As String, strTable As String, _
+    strForeignTable As String, strField As String, strForeignField As String) As String
+    GetTestRelationJson = "{" & vbCrLf & _
+        "  ""Info"": {" & vbCrLf & _
+        "    ""Class"": ""clsDbRelation""," & vbCrLf & _
+        "    ""Description"": ""Database relationship""" & vbCrLf & _
+        "  }," & vbCrLf & _
+        "  ""Items"": {" & vbCrLf & _
+        "    ""Name"": """ & strName & """," & vbCrLf & _
+        "    ""Attributes"": 4352," & vbCrLf & _
+        "    ""Table"": """ & strTable & """," & vbCrLf & _
+        "    ""ForeignTable"": """ & strForeignTable & """," & vbCrLf & _
+        "    ""Fields"": [" & vbCrLf & _
+        "      {" & vbCrLf & _
+        "        ""Name"": """ & strField & """," & vbCrLf & _
+        "        ""ForeignName"": """ & strForeignField & """" & vbCrLf & _
+        "      }" & vbCrLf & _
+        "    ]" & vbCrLf & _
+        "  }" & vbCrLf & _
+        "}" & vbCrLf
+End Function
+
+
 Private Sub RunMetadataOnlyMergeTest(cCategory As IDbComponent, strBaseName As String)
     Dim strFile As String
     Dim strJson As String
