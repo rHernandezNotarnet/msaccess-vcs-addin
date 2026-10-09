@@ -3127,18 +3127,11 @@ Private Function ExecuteTests(varFilters As Variant, blnFiltered As Boolean, _
         Exit Function
     End If
 
-    ' ForceUnattended must be set before the root begins: Attended is captured once, at
-    ' root creation, and is immutable for the life of the operation. It is set here,
-    ' before installing modTestAssert, because that install reports with a MsgBox2
-    ' before any root exists, and a headless run started from the Immediate Window has
-    ' a user-interface Source. Cleared below if the root is refused.
-    If blnHeadless Then Operation.ForceUnattended = True
-
     ' Ensure modTestAssert is present (installed silently in headless mode; an
     ' automation session has no one to answer a prompt)
     If Not TestAssertModuleExists Then
         If blnHeadless Then
-            InstallTestAssertModule
+            InstallTestAssertModule blnQuiet:=True
         ElseIf vbYes = MsgBox2(T("Test Helper Not Found"), _
             T("The modTestAssert module was not found in the current project."), _
             T("Would you like to install it now?"), _
@@ -3184,6 +3177,10 @@ Private Function ExecuteTests(varFilters As Variant, blnFiltered As Boolean, _
         modTestRunnerUI.WaitForWebRunnerReady
         Exit Function
     End If
+
+    ' ForceUnattended must be set before the root begins: Attended is captured once, at
+    ' root creation, and is immutable for the life of the operation.
+    If blnHeadless Then Operation.ForceUnattended = True
 
     Set cRoot = Operation.TryBeginRoot(eotTestRun)
     If cRoot Is Nothing Then
@@ -3390,9 +3387,13 @@ End Sub
 ' Date      : 5/7/2026
 ' Purpose   : Install the modTestAssert helper module into the current project.
 '           : Follows the same pattern as CreateLetterCasingTemplate.
+'           : blnQuiet reports the install to the log instead of a dialog. A headless
+'           : test run installs the module before its root begins, so nothing has marked
+'           : it unattended yet, and a run started from the Immediate Window still has a
+'           : user-interface Source.
 '---------------------------------------------------------------------------------------
 '
-Public Sub InstallTestAssertModule()
+Public Sub InstallTestAssertModule(Optional ByVal blnQuiet As Boolean = False)
 
     Dim cmp As VBIDE.VBComponent
     Dim cCode As New clsConcat
@@ -3486,11 +3487,15 @@ Public Sub InstallTestAssertModule()
     End If
     cmp.CodeModule.InsertLines 1, cCode.GetStr
 
-    MsgBox2 T("Test Helper Installed"), _
-        T("The modTestAssert module has been added to your project."), _
-        T("Use TestAssert in your test subs to record assertions. " & _
-          "Run tests from the VCS ribbon or call VCS.RunTests."), _
-        vbInformation
+    If blnQuiet Then
+        Log.Add T("The modTestAssert module has been added to your project."), False
+    Else
+        MsgBox2 T("Test Helper Installed"), _
+            T("The modTestAssert module has been added to your project."), _
+            T("Use TestAssert in your test subs to record assertions. " & _
+              "Run tests from the VCS ribbon or call VCS.RunTests."), _
+            vbInformation
+    End If
 
 End Sub
 
