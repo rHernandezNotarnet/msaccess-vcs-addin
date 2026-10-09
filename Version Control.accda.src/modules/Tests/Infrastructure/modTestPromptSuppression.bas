@@ -74,6 +74,31 @@ Public Sub TestSilentMsgBox2ReturnsDefaultResult()
 End Sub
 
 
+Public Sub TestSilentMsgBox2AnswersOnlyTheCallerDefault()
+    Dim intResult As VbMsgBoxResult
+
+    ' What a suppressed question answers is intDefaultResult and nothing else: the
+    ' dialog's own default button is not consulted, and a caller that passes no default
+    ' gets vbOK, whatever buttons the question offered. Each call site reads that answer
+    ' as its decision, so this pins the decisions an unattended run makes on its own.
+    If PromptWouldDisplay(False) Then
+        TestAssert False, "precondition failed: prompts are not suppressed, MsgBox2 calls skipped"
+        Exit Sub
+    End If
+
+    intResult = MsgBox2("Suppressed prompt", , , vbYesNo + vbDefaultButton2)
+    TestAssert intResult = vbOK, "a Yes/No question with no default answers vbOK, not its default button"
+    intResult = MsgBox2("Suppressed prompt", , , vbOKCancel + vbDefaultButton2)
+    TestAssert intResult = vbOK, "an OK/Cancel question with no default answers vbOK, not its default button"
+    intResult = MsgBox2("Suppressed prompt", , , vbRetryCancel)
+    TestAssert intResult = vbOK, "a Retry/Cancel question with no default answers vbOK, which is neither button"
+    intResult = MsgBox2("Suppressed prompt", , , vbYesNoCancel + vbDefaultButton3, , vbYes)
+    TestAssert intResult = vbYes, "a caller default wins over the dialog's default button"
+    intResult = MsgBox2("Suppressed prompt", , , vbAbortRetryIgnore, , vbAbort)
+    TestAssert intResult = vbAbort, "an Abort/Retry/Ignore question answers the caller default"
+End Sub
+
+
 Public Sub TestUnattendedRootSuppressesEveryPrompt()
     ' The state an API or MCP call arrives in: nothing asked for silence, and the root
     ' captured Attended = False from the automation source. Until this was covered, an
