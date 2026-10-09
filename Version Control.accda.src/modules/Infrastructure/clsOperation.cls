@@ -341,6 +341,10 @@ Public Property Get Status() As eOperationState
             m_Root.State = eosReady
             Me.Result = eorTimeout
             RestoreUserErrorTrapping
+            ' Clear what the expired root's caller asked for, as Finish does. Left set,
+            ' the next caller outside a root would inherit silence it never asked for.
+            Me.ForceUnattended = False
+            m_eimSticky = eimNormal
         End If
     End If
     Status = m_Root.State
