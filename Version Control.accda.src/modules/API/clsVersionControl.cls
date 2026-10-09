@@ -3388,8 +3388,8 @@ End Sub
 ' Purpose   : Install the modTestAssert helper module into the current project.
 '           : Follows the same pattern as CreateLetterCasingTemplate.
 '           : blnQuiet reports the install to the log instead of a dialog. A headless
-'           : test run installs the module before its root begins, so nothing has marked
-'           : it unattended yet, and a run started from the Immediate Window still has a
+'           : test run installs the module before its root begins, when only Source can
+'           : mark it unattended, and a run started from the Immediate Window has a
 '           : user-interface Source.
 '---------------------------------------------------------------------------------------
 '

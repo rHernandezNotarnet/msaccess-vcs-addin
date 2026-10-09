@@ -179,9 +179,10 @@ End Sub
 
 
 Public Sub TestRibbonCommandClearsAStrandedForceUnattended()
-    ' A headless entry sets ForceUnattended before it begins its root, and Finish is what
-    ' clears it. A root that never finishes leaves it set, and outside a root it would
-    ' make the next ribbon command unattended. The ribbon reset has to clear it too.
+    ' A headless entry sets ForceUnattended before it begins its root; Finish clears it,
+    ' and so does the entry when its root is refused. A root that never finishes leaves
+    ' it set, and outside a root it would make the next ribbon command unattended. The
+    ' ribbon reset has to clear it too.
     Dim cOp As clsOperation
 
     Set cOp = New clsOperation
