@@ -1089,6 +1089,19 @@ End Function
 
 
 '---------------------------------------------------------------------------------------
+' Procedure : IsInheritedRelation
+' Author    : Adam Waller
+' Date      : 6/30/2020
+' Purpose   : Returns true if the relationship was inherited from tables in a linked
+'           : database. (We don't need to export or import these.)
+'---------------------------------------------------------------------------------------
+'
+Public Function IsInheritedRelation(objRelation As DAO.Relation) As Boolean
+    IsInheritedRelation = ((objRelation.Attributes And dbRelationInherited) = dbRelationInherited)
+End Function
+
+
+'---------------------------------------------------------------------------------------
 ' Procedure : GetSystemTableNames
 ' Author    : Ricardo Hernandez (Notarnet)
 ' Date      : 8/21/2026
