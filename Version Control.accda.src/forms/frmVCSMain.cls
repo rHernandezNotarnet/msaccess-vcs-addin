@@ -34,6 +34,10 @@ Public strLastTestResultsPath As String
 ' Use this property to set the path to the source files (such as a build triggered from the API)
 Public strSourcePath As String
 
+' Whether the last export started from cmdExport_Click finished without being stopped.
+' (Read by clsVersionControl.Export, so an API caller gets the outcome as a return value.)
+Public blnLastExportSucceeded As Boolean
+
 ' Design-time and test-console client dimensions (twips; match frmVCSMain.form Width).
 Private Const DESIGN_INSIDE_WIDTH As Long = 9360
 Private Const TEST_INSIDE_WIDTH As Long = 12300
@@ -337,13 +341,15 @@ End Sub
 ' Author    : Adam Waller
 ' Date      : 7/8/2021
 ' Purpose   : Confirm that the user really wants to cancel the current operation.
+'           : When the prompt is suppressed, the operation resumes: nobody confirmed
+'           : the close, and it may have come from code, such as an AutoClose timer.
 '---------------------------------------------------------------------------------------
 '
 Private Function ConfirmCancel() As Boolean
     ConfirmCancel = MsgBox2(T("Cancel Current Operation?"), _
         T("You are in the midst of a running process. Are you sure you want to cancel?"), _
         T("Click [Yes] to cancel the process, or [No] to resume."), _
-        vbYesNo + vbDefaultButton2 + vbExclamation, , vbYes, True) = vbYes
+        vbYesNo + vbDefaultButton2 + vbExclamation, , vbNo, True) = vbYes
 End Function
 
 
@@ -355,6 +361,8 @@ End Function
 '---------------------------------------------------------------------------------------
 '
 Public Sub cmdExport_Click()
+
+    Me.blnLastExportSucceeded = False
 
     ' Make sure we are ready to begin an operation...
     If Not Operation.Begin(eotExport) Then Exit Sub
@@ -380,9 +388,12 @@ Public Sub cmdExport_Click()
 
     ' Don't attempt to access controls if we are in the process of closing the form.
     If FormLoaded(Me) Then
-        If m_blnCancelRequested Then
+        If m_blnCancelRequested Or Operation.Result = eorCanceled Then
             SetStatusText T("Canceled"), T("Export Canceled"), _
                 T("The export was canceled. Additional details can be found in the project log file.<br><br>You may now close this window.")
+        ElseIf Operation.ErrorLevel = eelCritical Then
+            SetStatusText T("Finished"), T("Export Failed"), _
+                T("The export did not complete. Additional details can be found in the project log file.<br><br>You may now close this window.")
         Else
             SetStatusText T("Finished"), T("Export Complete"), _
                 T("Additional details can be found in the project log file.<br><br>You may now close this window.")
@@ -391,9 +402,16 @@ Public Sub cmdExport_Click()
         Me.strCopyToClipboardPath = Log.SavedLogFilePath
         cmdOpenLogFile.Visible = (Me.strLastLogFilePath <> vbNullString)
         cmdCopyPath.Visible = cmdOpenLogFile.Visible
-        If m_blnCancelRequested Then
+        ' A critical error stops the export, whether it was raised by an object or by a
+        ' check that ended it before it began, such as a newer add-in version in the
+        ' project's options. Without a result the MCP callback would report it as
+        ' complete.
+        If m_blnCancelRequested Or Operation.Result = eorCanceled Then
             Operation.Finish eorCanceled
+        ElseIf Operation.ErrorLevel = eelCritical Then
+            Operation.Finish eorFailed
         Else
+            Me.blnLastExportSucceeded = True
             Operation.Finish
         End If
         DoEvents

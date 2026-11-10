@@ -92,6 +92,42 @@ Public Sub TestSecondRootRefusedWhileFirstIsActive()
 End Sub
 
 
+Public Sub TestUnattendedRootIsCapturedUnattended()
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    Set cOp = NewOperation
+    Set cRoot = cOp.TryBeginUnattendedRoot(eotTestRun)
+    TestAssert Not cRoot Is Nothing, "unattended root acquired"
+    TestAssert Not cOp.Attended, "root captured as unattended"
+    cRoot.Complete eorSuccess
+    TestAssert Not cOp.ForceUnattended, "ForceUnattended cleared after finish"
+End Sub
+
+
+Public Sub TestUnattendedRootRefusalRestoresForceUnattended()
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+    Dim cOther As clsRootOperationLease
+
+    ' Refused, the headless caller has no root of its own to finish and clear the flag.
+    ' Left set, it outlives the call: the live root's own finish clears it, but a root
+    ' that expires on its heartbeat instead hands it to the next root.
+    Set cOp = NewOperation
+    Set cRoot = cOp.TryBeginRoot(eotOther)
+    Set cOther = cOp.TryBeginUnattendedRoot(eotTestRun)
+    TestAssert cOther Is Nothing, "unattended root refused while another is active"
+    TestAssert Not cOp.ForceUnattended, "refusal puts ForceUnattended back"
+
+    ' A caller that had set the flag itself keeps it.
+    cOp.ForceUnattended = True
+    Set cOther = cOp.TryBeginUnattendedRoot(eotTestRun)
+    TestAssert cOther Is Nothing, "unattended root refused again"
+    TestAssert cOp.ForceUnattended, "refusal leaves a caller's own setting in place"
+    cRoot.Complete eorSuccess
+End Sub
+
+
 Public Sub TestRootLeaseRejectsMismatchedComplete()
     Dim cOp As clsOperation
     Dim cRoot As clsRootOperationLease
@@ -282,6 +318,155 @@ Public Sub TestAttendedIsImmutableForRootLifetime()
     cOp.ForceUnattended = True
     TestAssert cOp.Attended, "late ForceUnattended does not change the live root"
     cRoot.Complete eorSuccess
+End Sub
+
+
+Public Sub TestAttendedRootKeepsItsPrompts()
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    ' The half of the policy an unattended caller does not change.
+    Set cOp = NewOperation
+    Set cRoot = cOp.TryBeginRoot(eotOther)
+    TestAssert cOp.AllowsPrompt(False), "attended normal root shows ordinary prompts"
+    cOp.InteractionMode = eimSilent
+    TestAssert Not cOp.AllowsPrompt(False), "attended silent root suppresses ordinary prompts"
+    TestAssert cOp.AllowsPrompt(True), "attended silent root shows gesture prompts"
+    cRoot.Complete eorSuccess
+End Sub
+
+
+Public Sub TestAutomationCallerIsUnattendedOutsideARoot()
+    Dim cOp As clsOperation
+
+    ' Some API calls prompt before their root begins, or never begin one. No root has
+    ' captured anything for them yet, so Attended has to describe the caller.
+    Set cOp = NewOperation
+    cOp.Source = eosExternalAPI
+    TestAssert Not cOp.Attended, "API caller unattended outside a root"
+    TestAssert Not cOp.AllowsPrompt(False), "API caller not prompted outside a root"
+    cOp.Source = eosMCPTool
+    TestAssert Not cOp.Attended, "MCP caller unattended outside a root"
+    cOp.Source = eosUserInterface
+    cOp.ForceUnattended = True
+    TestAssert Not cOp.Attended, "ForceUnattended caller unattended outside a root"
+End Sub
+
+
+Public Sub TestInteractiveCallerIsAttendedAfterAnApiRoot()
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    ' What the root captured belongs to the root. Once it finishes, a ribbon command
+    ' in the same instance is a different caller and has to see its own prompts.
+    Set cOp = NewOperation
+    cOp.Source = eosExternalAPI
+    Set cRoot = cOp.TryBeginRoot(eotOther)
+    cRoot.Complete eorSuccess
+    cOp.ResetForInteractiveCommand
+    TestAssert cOp.Attended, "ribbon caller attended after an API root"
+    TestAssert cOp.AllowsPrompt(False), "ribbon caller prompted after an API root"
+End Sub
+
+
+Public Sub TestInteractiveCommandClearsForceUnattended()
+    Dim cOp As clsOperation
+
+    ' A headless call that never reaches the Finish of its own root leaves the flag
+    ' behind. Outside a root it now silences every prompt, so an interactive command
+    ' has to clear it along with Source.
+    Set cOp = NewOperation(True)
+    cOp.ResetForInteractiveCommand
+    TestAssert Not cOp.ForceUnattended, "interactive command clears ForceUnattended"
+    TestAssert cOp.Attended, "interactive command is attended"
+End Sub
+
+
+Public Sub TestInteractiveCommandKeepsALiveRootsForceUnattended()
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    ' A ribbon click while a headless root runs is not that root's caller. The root
+    ' still needs the flag, and its own Finish clears it.
+    Set cOp = NewOperation
+    Set cRoot = cOp.TryBeginUnattendedRoot(eotBuild)
+    cOp.ResetForInteractiveCommand
+    TestAssert cOp.ForceUnattended, "a live headless root keeps ForceUnattended"
+    cRoot.Complete eorSuccess
+    TestAssert Not cOp.ForceUnattended, "its Finish clears it"
+End Sub
+
+
+Public Sub TestUnattendedRootSuppressesEveryPrompt()
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    ' An API root runs in normal mode unless the caller asked for silence, and nobody
+    ' is there to answer a dialog it opens.
+    Set cOp = NewOperation
+    cOp.Source = eosExternalAPI
+    Set cRoot = cOp.TryBeginRoot(eotExport)
+    TestAssert cOp.InteractionMode = eimNormal, "precondition: API root in normal mode"
+    TestAssert Not cOp.AllowsPrompt(False), "unattended root suppresses ordinary prompts"
+    TestAssert Not cOp.AllowsPrompt(True), "unattended root suppresses the caller's gesture prompts"
+    cRoot.Complete eorSuccess
+End Sub
+
+
+Public Sub TestGesturePromptFollowsThePersonActing()
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    ' A ribbon click while an MCP export runs in normal mode: the root's own prompts
+    ' stay suppressed, but a prompt answering that click (ReportRefusal) is for the
+    ' person who clicked.
+    Set cOp = NewOperation
+    cOp.Source = eosMCPTool
+    Set cRoot = cOp.TryBeginRoot(eotExport)
+    cOp.ResetForInteractiveCommand
+    TestAssert Not cOp.Attended, "live root keeps the value it captured"
+    TestAssert Not cOp.AllowsPrompt(False), "live unattended root still suppresses its prompts"
+    TestAssert cOp.AllowsPrompt(True), "gesture prompt shown to the interactive caller"
+    cRoot.Complete eorSuccess
+End Sub
+
+
+Public Sub TestInteractiveCommandGivesALiveRootBackItsSource()
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    ' The rest of an MCP root branches on Source, so a ribbon click during it must
+    ' not leave the root looking like a person once the click is handled.
+    Set cOp = NewOperation
+    cOp.Source = eosMCPTool
+    Set cRoot = cOp.TryBeginRoot(eotExport)
+    cOp.ResetForInteractiveCommand
+    TestAssert cOp.Source = eosUserInterface, "the command runs as the person"
+    cOp.EndInteractiveCommand
+    TestAssert cOp.Source = eosMCPTool, "the root gets its own caller back"
+    TestAssert Not cOp.AllowsPrompt(True), "and its gesture prompts are suppressed again"
+    cRoot.Complete eorSuccess
+End Sub
+
+
+Public Sub TestInteractiveCommandKeepsSourceWhenTheRootEnded()
+    Dim cOp As clsOperation
+    Dim cRoot As clsRootOperationLease
+
+    ' A root that finishes while the command runs, or a command with no root under
+    ' it, leaves the person's Source in place for what they do next.
+    Set cOp = NewOperation
+    cOp.Source = eosMCPTool
+    Set cRoot = cOp.TryBeginRoot(eotExport)
+    cOp.ResetForInteractiveCommand
+    cRoot.Complete eorSuccess
+    cOp.EndInteractiveCommand
+    TestAssert cOp.Source = eosUserInterface, "root finished during the command"
+
+    cOp.Source = eosExternalAPI
+    cOp.ResetForInteractiveCommand
+    cOp.EndInteractiveCommand
+    TestAssert cOp.Source = eosUserInterface, "no root under the command"
 End Sub
 
 

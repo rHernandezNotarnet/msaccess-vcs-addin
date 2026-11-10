@@ -86,6 +86,12 @@ Public Function HandleRibbonCommand(strCommand As String, Optional strArgument A
     ' commands while the current command is running.
     Static IsRunning As Boolean
 
+    Dim lngErrNumber As Long
+    Dim strErrSource As String
+    Dim strErrDescription As String
+    Dim strErrHelpFile As String
+    Dim lngErrHelpContext As Long
+
     LogUnhandledErrors
     On Error GoTo ErrHandler
 
@@ -103,9 +109,8 @@ Public Function HandleRibbonCommand(strCommand As String, Optional strArgument A
         GoTo CleanUp
     End If
 
-    ' Ribbon commands are interactive by definition. Operation.Source is sticky,
-    ' so clear any value left behind by an earlier API/MCP call in this instance.
-    Operation.Source = eosUserInterface
+    ' Ribbon commands are interactive by definition.
+    Operation.ResetForInteractiveCommand
 
     ' If a function is not found, this will throw an error. It is up to the ribbon
     ' designer to ensure that the control IDs match public procedures in the VCS
@@ -120,16 +125,23 @@ Public Function HandleRibbonCommand(strCommand As String, Optional strArgument A
     End If
 
 CleanUp:
+    Operation.EndInteractiveCommand
     IsRunning = False
     Exit Function
 
 ErrHandler:
     ' An error occurred so we need to make it available for further attempts
     ' but do not handle the error.
+    lngErrNumber = Err.Number
+    strErrSource = Err.Source
+    strErrDescription = Err.Description
+    strErrHelpFile = Err.HelpFile
+    lngErrHelpContext = Err.HelpContext
+    Operation.EndInteractiveCommand
     IsRunning = False
 
     ' Re-throw
-    Err.Raise Err.Number, Err.Source, Err.Description, Err.HelpFile, Err.HelpContext
+    Err.Raise lngErrNumber, strErrSource, strErrDescription, strErrHelpFile, lngErrHelpContext
 
 End Function
 

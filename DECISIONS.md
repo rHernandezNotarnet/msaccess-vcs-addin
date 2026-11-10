@@ -83,6 +83,139 @@ contradictory guidance.
 
 ---
 
+## 2026-10-27 — An interactive command gives a live root back its Source; a suppressed cancel resumes
+
+**Trigger**: Review after merging #818. `ResetForInteractiveCommand` set `Source` to
+`eosUserInterface` even while another caller's root was live, and nothing put it back.
+Code later in that root branches on `Source`: `clsConflicts` auto-resolves conflicts
+for an automation caller and otherwise opens the conflict form, which no
+`MsgBox2` rule suppresses. A staged MCP build leaves Access idle between its stages, so
+one ribbon click was enough. Separately, *Cancel Current Operation?* answered Yes when
+suppressed, so closing the progress form of an MCP or API root cancelled it without
+asking. On `dev` before #818 that dialog was shown in normal mode.
+
+**Options explored**:
+- *Leave `Source` alone while a root is live.* Rejected: `ReportRefusal` decides from
+  the caller acting now, so a refused ribbon click would only log.
+- *Save and restore `Source` in `HandleRibbonCommand` itself.* Works for the ribbon
+  only, and `clsOperation` already holds the token needed to tell the same root from
+  a new one. Chosen in `clsOperation` instead: `EndInteractiveCommand` restores the
+  saved `Source` only when the root it was saved for is still live.
+- *Show the cancel confirmation to whoever closes the form.* Rejected: the form can
+  also be closed by code (an `AutoClose` timer), and an unattended root would then
+  hang on the dialog.
+- *Answer No when suppressed* — chosen. `Form_Unload` keeps the form open either way,
+  so the operation goes on.
+
+**Decision**: The ribbon and the Add-Ins menu items pair `ResetForInteractiveCommand`
+with `EndInteractiveCommand`. `ConfirmCancel` passes `vbNo` as its unattended answer.
+`StandardizeLetterCasing` also returns `True` when a person creates the starter
+template, so that path no longer finishes as `eorFailed`.
+
+**What this rules out**: A person cannot cancel an unattended root by closing its
+progress form; the MCP client cancels it (`vcs_cancel_operation`), or the root times
+out. A new interactive entry point has to call both procedures, not only the reset.
+
+**Relevant files**: `clsOperation.cls`, `modAPI.bas`, `modAddInMenu.bas`,
+`frmVCSMain.cls`, `clsVersionControl.cls`, `modTestOperationLifecycle.bas`,
+`docs/automation-contract.md`.
+
+---
+
+## 2026-10-20 — An unattended caller is never prompted
+
+> **⚠ Partially superseded** (2026-10-27): `ResetForInteractiveCommand` no longer
+> leaves a live root with the interactive `Source`: `EndInteractiveCommand` restores it.
+> The cancel confirmation on the progress form now answers No when suppressed, so the
+> operation goes on, and `StandardizeLetterCasing` returns `True` after creating the
+> starter template. See "An interactive command gives a live root back its Source; a
+> suppressed cancel resumes" above.
+
+**Trigger**: An API or MCP call runs in normal interaction mode unless the caller asks
+for silence, and `PromptWouldDisplay` read `Attended` only for gesture prompts. So any
+`MsgBox2` such a call reached opened a modal that a COM client cannot dismiss, and the
+call waited until the process was killed: an error routed through `Log.Error`, the
+*Could not import* question of `ImportObject`, *Newer VCS Version Detected* on `Export`.
+`clsLog.Error` already took its automation branch on `Not Attended`, expecting the gate
+to suppress. Issue #810 asked which behavior is intended; the answer was (b) below.
+
+**Options explored**:
+- *(a) Keep the contract*, and give unattended callers headless variants of the
+  single-object and by-type calls, or a session-level opt-in. Every new entry point
+  would have to remember the guard, and `SetInteractionMode` resets at each `Finish`,
+  so a client repeats it before every call. Rejected.
+- *Force `eimSilent` from the API layer* stays rejected (2026-04-15). Its main reason,
+  the build confirmation defaulting to Cancel, is gone: API callers skip it. But silent
+  mode does more than suppress prompts (no progress form, the quiet connection path),
+  and the API layer would still have to manage it across timer continuations.
+- *Suppress in the gate when the root is unattended*. Fixes prompts inside an API root,
+  not outside one: `Attended` was whatever the previous root captured, `True` in a fresh
+  instance. An API call that prompts without a root (`MigrateDebugAssert`) still
+  opened a modal, and the first ribbon prompt after an API call was suppressed. Not
+  enough on its own.
+- *(b) An unattended caller suppresses every `MsgBox2`, and outside a root the incoming
+  caller decides* — chosen, with the rule `ReportRefusal` already used.
+
+**Decision**:
+- The policy is `Operation.AllowsPrompt`, which `PromptWouldDisplay` asks after
+  `TestRunActive`. An ordinary prompt shows when `Attended` and the mode is normal. A
+  gesture prompt shows, in silent mode too, when the root or the caller acting now is
+  attended; `ReportRefusal` uses that, since its dialog answers the refused caller and
+  not the root that is running (it still only logs while that root is silent).
+- `Attended` returns what a live root captured; outside a root,
+  `Not (AutomationSource Or ForceUnattended)`.
+- `ResetForInteractiveCommand`, called by the ribbon and the Add-Ins menu items, resets
+  `Source` and, when no root is live, clears `ForceUnattended`, so a person is not left
+  with an automation caller's state. A live headless root keeps its flag.
+- Every `MsgBox2` question passes `intDefaultResult`, set to the answer its call site
+  already took for `vbOK`, so a caller that was suppressed before (silent mode, a test
+  run, `INSTALL SILENT`) sees no change. Two are the exception and answer Cancel: *Save
+  User Settings* on uninstall and *Multiple Batches Required* in `frmVCSSplitFiles`.
+  Both acted on `vbOK`, and a form opened through the API holds an unattended root, so
+  a person working in it now gets the default. `modTestPromptDefaults` fails on a
+  question without one.
+- A suppressed question that ends an operation fails visibly. `ExportSource` saves the
+  log on the stops that come after its log has started, without saving options or
+  index; `cmdExport_Click` finishes a critical export as `eorFailed` (a cancelled
+  conflict dialog stays `eorCanceled`); and `Export`, `FullExport`, `ExportVBA`,
+  `MigrateDebugAssert` and `StandardizeLetterCasing` return a Boolean.
+  `StandardizeLetterCasing` also finishes its root as `eorFailed` when it returns
+  `False`, which includes invalid entries and a missing module, for a person too.
+- `modConnect.CacheConnection` also reads `PromptWouldDisplay`. An unattended build in
+  normal mode therefore takes the path silent builds take: no `OpenDatabase` probe, so
+  no driver-completed string to save to `.env` (see 2026-10-09).
+
+**What this rules out**: An API or MCP caller can no longer get a dialog by leaving the
+mode normal. `HandleRibbonCommand` is interactive by definition, so a script that
+drives it, as `ExampleBuildFromSource` suggests, is still treated as attended and can
+still meet a modal; it should call `SetInteractionMode` first. A new question must name its unattended answer.
+Revisit if a caller needs per-question answers rather than defaults. Left open:
+- *An expired headless root* still leaves `eimSilent` sticky, and `ForceUnattended`
+  until an interactive command. Finishing it where it is found expired is the agreed
+  direction; it changes the lifecycle of three call sites and does not depend on this
+  policy, so it is a change of its own.
+- A form opened through the API (`ShowOptions`, `SplitFiles`) holds a root that
+  captured an unattended caller, so the person working in it gets every question's
+  default answer, not the dialog.
+- `Source` stays sticky on other paths: the Immediate Window, and a form that was
+  already open when an API call ran. A person who then clicks Export on `frmVCSMain`,
+  or closes its progress form, gets the unattended answers. Only the ribbon and the
+  Add-Ins menu reset it.
+- An `APIAsync` method that never begins a root (`MergeBuild` with no full build, a
+  refused root) posts no MCP callback, so the client waits for its timeout. This was
+  true before, behind a modal; it is now silent. Posting an `error` from
+  `HandleAPIAsyncOperation` when no root of the call is live would close it.
+- A root-less API call made while another caller's attended root is live reads that
+  root's `Attended`.
+- Dialogs that do not go through `MsgBox2`: VBA runtime errors, Access's own prompts.
+
+**Relevant files**: `clsOperation.cls`, `modUIUtil.bas`, `modAPI.bas`,
+`modAddInMenu.bas`, `clsVersionControl.cls`, `modExport.bas`, `frmVCSMain.cls`, the
+fifteen questions that passed no default, `modTestOperationLifecycle.bas`,
+`modTestPromptDefaults.bas`, `docs/automation-contract.md`.
+
+---
+
 ## 2026-10-09 — Capture driver-completed ODBC connections via Database.Connect
 
 **Trigger**: A project linked to SQL Server through ODBC Driver 18 prompted for the
@@ -2031,6 +2164,13 @@ the subsequent `ReadFile` in module import — that changes rejection order.
 ---
 
 ## 2026-08-21 — Root operation ownership: two lease forms, inert non-singleton instances, no child scopes
+
+> **⚠ Partially superseded** (2026-10-20): A root still captures `Attended`, but
+> outside a live root `Attended` now describes the incoming caller, and the prompt rule
+> moved from `PromptWouldDisplay` to `Operation.AllowsPrompt`. An unattended caller is
+> never prompted, and a gesture prompt also shows to an attended caller who acts while
+> another caller's unattended root runs. See "An unattended caller is never prompted"
+> above.
 
 **Trigger**: Operation state was a global mutable with split teardown ownership —
 nested work could restore `InteractionMode` while `Operation.Finish` released `Log`
@@ -6723,6 +6863,13 @@ What would trigger revisiting: if a future composer rewrite collapses multiple s
 > `Operation.Source` to force headless runs for API/MCP callers, and the ribbon
 > resets `Source` so it does not leak into a later interactive click. See
 > "Force headless test runs for API and MCP callers" above.
+
+> **⚠ Partially superseded** (2026-10-20): Dialogs for API and MCP callers no longer
+> depend on `InteractionMode`. An unattended caller is never prompted, and every
+> `MsgBox2` question passes the answer it gets instead, so the Cancel default this
+> entry worried about cannot reach one. Forcing `eimSilent` from the API layer stays
+> rejected, and the four `Operation.Source` checks below are unchanged. See "An
+> unattended caller is never prompted" above.
 
 **Trigger**: When the MCP server calls `ImportObject` to merge a single component from source, `frmVCSMain` opens, becomes visible, and stays open — adding unnecessary overhead and requiring manual dismissal. Full builds and exports initiated by an agent also leave the form open after completion. The build confirmation dialog (`vbDefaultButton3` = Cancel) could block API callers entirely.
 

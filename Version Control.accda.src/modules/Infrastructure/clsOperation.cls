@@ -57,6 +57,11 @@ Private m_eimSticky As eInteractionMode
 ' Heartbeat value last copied to the registry, throttling Pulse's registry write.
 Private m_datRegistryPulse As Date
 
+' The Source and root token an interactive command found when it began during a live
+' root, so EndInteractiveCommand can give that root its own caller back.
+Private m_eosSourceBeforeCommand As eOperationSource
+Private m_strRootTokenBeforeCommand As String
+
 ' Lease issued by Begin. It has to be held here for the life of the root: a lease
 ' released while the root is still active abandons it (clsRootOperationLease.
 ' Class_Terminate), and Begin's caller does not complete until Finish.
@@ -98,6 +103,30 @@ Public Function Begin(intType As eOperationType) As Boolean
 
     Set m_cSyncLease = TryBeginRoot(intType)
     Begin = (Not m_cSyncLease Is Nothing)
+
+End Function
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : TryBeginUnattendedRoot
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 10/19/2026
+' Purpose   : TryBeginRoot for a headless caller. ForceUnattended has to be set before
+'           : the root exists, since Attended is captured at root creation. When the
+'           : root is refused, no root of this call will finish and clear the flag, so
+'           : the value it had is put back here.
+'---------------------------------------------------------------------------------------
+'
+Public Function TryBeginUnattendedRoot(intType As eOperationType) As clsRootOperationLease
+
+    Dim cLease As clsRootOperationLease
+    Dim blnPriorForceUnattended As Boolean
+
+    blnPriorForceUnattended = Me.ForceUnattended
+    Me.ForceUnattended = True
+    Set cLease = TryBeginRoot(intType)
+    If cLease Is Nothing Then Me.ForceUnattended = blnPriorForceUnattended
+    Set TryBeginUnattendedRoot = cLease
 
 End Function
 
@@ -398,8 +427,15 @@ Public Property Let InteractionMode(eimMode As eInteractionMode)
 End Property
 
 
+' Whether someone is there to answer a prompt. A live root keeps the value it captured
+' when it began. Outside one, that value describes the previous operation, so the
+' incoming caller decides, as in ReportRefusal.
 Public Property Get Attended() As Boolean
-    Attended = m_Root.Attended
+    If RootIsLive Then
+        Attended = m_Root.Attended
+    Else
+        Attended = CallerIsAttended
+    End If
 End Property
 
 
@@ -419,6 +455,94 @@ End Property
 Public Property Get AutomationSource() As Boolean
     AutomationSource = (Me.Source = eosExternalAPI Or Me.Source = eosMCPTool)
 End Property
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : AllowsPrompt
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 10/20/2026
+' Purpose   : The interaction policy behind modUIUtil.PromptWouldDisplay, kept on the
+'           : operation so a test can drive it on a private instance.
+'           : Nobody can answer a prompt raised for an unattended caller: an agent, a
+'           : script or a CI runner would wait on it until the process is killed. So an
+'           : unattended caller is never prompted, whatever the interaction mode, and
+'           : MsgBox2 logs the prompt and returns its default answer. An attended
+'           : caller is prompted unless the operation is silent.
+'           : A prompt the user's own gesture asked for is shown, in silent mode too,
+'           : when either the root or the caller acting now is attended. The second
+'           : case is a person who acts while someone else's unattended root runs,
+'           : such as a ribbon click that is refused.
+'---------------------------------------------------------------------------------------
+'
+Public Function AllowsPrompt(Optional blnUserGesturePrompt As Boolean = False) As Boolean
+    If blnUserGesturePrompt Then
+        AllowsPrompt = Me.Attended Or CallerIsAttended
+    Else
+        AllowsPrompt = Me.Attended And (Me.InteractionMode = eimNormal)
+    End If
+End Function
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : ResetForInteractiveCommand
+' Author    : Ricardo Hernandez (Notarnet)
+' Date      : 10/20/2026
+' Purpose   : Called by entry points that are interactive by definition: a ribbon
+'           : command or an Add-Ins menu item. Source is sticky, so clear any value
+'           : left behind by an earlier API or MCP call in this instance. Outside a
+'           : root, also clear a ForceUnattended left behind by a headless call whose
+'           : root never reached its Finish: either would keep every prompt from the
+'           : person at the screen. A live root still needs its flag, and its own
+'           : Finish clears it.
+'           : A live root also still needs its Source after the command: code later in
+'           : the root branches on it, such as the conflict check, which would open
+'           : the conflict form for an MCP caller. The caller pairs this with
+'           : EndInteractiveCommand, which puts it back.
+'---------------------------------------------------------------------------------------
+'
+Public Sub ResetForInteractiveCommand()
+    If RootIsLive Then
+        m_eosSourceBeforeCommand = Me.Source
+        m_strRootTokenBeforeCommand = m_Root.Token
+    Else
+        m_strRootTokenBeforeCommand = vbNullString
+        Me.ForceUnattended = False
+    End If
+    Me.Source = eosUserInterface
+End Sub
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : EndInteractiveCommand
+' Author    : Adam Waller
+' Date      : 10/27/2026
+' Purpose   : Called when an interactive command returns. When it ran during a live
+'           : root, and that same root is still live, give the root back the Source it
+'           : had. A root that finished meanwhile is left alone, and so is a new one,
+'           : which set its own Source.
+'---------------------------------------------------------------------------------------
+'
+Public Sub EndInteractiveCommand()
+    If Len(m_strRootTokenBeforeCommand) = 0 Then Exit Sub
+    If RootIsLive Then
+        If StrComp(m_Root.Token, m_strRootTokenBeforeCommand, vbBinaryCompare) = 0 Then
+            Me.Source = m_eosSourceBeforeCommand
+        End If
+    End If
+    m_strRootTokenBeforeCommand = vbNullString
+End Sub
+
+
+' The rule a root captures as Attended when it begins.
+Private Function CallerIsAttended() As Boolean
+    CallerIsAttended = Not (Me.AutomationSource Or Me.ForceUnattended)
+End Function
+
+
+' A root that has begun and has not finished or expired. The test InteractionMode uses.
+Private Function RootIsLive() As Boolean
+    RootIsLive = Not (m_Root.State = eosReady Or Len(m_Root.Token) = 0)
+End Function
 
 
 Private Function CanBeginRoot() As Boolean
@@ -444,14 +568,17 @@ End Function
 '           : Attended/InteractionMode state describes the previous operation and cannot
 '           : be trusted - decide from the incoming caller's own intent instead. An
 '           : automated or explicitly unattended caller gets a log entry, never a dialog.
+'           : The dialog answers the caller's own command, so it goes out as a gesture
+'           : prompt: the root that is running may be unattended, and its Attended
+'           : would otherwise suppress a dialog meant for somebody else.
 '---------------------------------------------------------------------------------------
 '
 Private Sub ReportRefusal(strTitle As String, strMessage As String)
 
     If IsSessionSingleton _
         And m_eimSticky = eimNormal _
-        And Not (Me.AutomationSource Or Me.ForceUnattended) Then
-        MsgBox2 strTitle, strMessage, , vbExclamation
+        And CallerIsAttended Then
+        MsgBox2 strTitle, strMessage, , vbExclamation, , , True
     Else
         LogDiagnostic strTitle & ": " & strMessage, "clsOperation.CanBeginRoot"
     End If
@@ -464,7 +591,7 @@ Private Sub InitializeRoot(intType As eOperationType)
     m_Root.Token = NewRootToken()
     m_Root.OperationType = intType
     m_Root.RequestedInteractionMode = m_eimSticky
-    m_Root.Attended = Not (Me.AutomationSource Or Me.ForceUnattended)
+    m_Root.Attended = CallerIsAttended
     m_Root.StartTime = Now
     m_Root.FinishTime = 0
     m_Root.State = eosRunning
